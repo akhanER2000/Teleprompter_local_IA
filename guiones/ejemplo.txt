@@ -1,0 +1,9 @@
+Buenas tardes a todos. Hoy vamos a presentar las fases uno, dos y tres del proyecto.
+
+En la fase uno revisaremos la arquitectura general del sistema y los componentes principales.
+
+En la fase dos demostraremos el funcionamiento del módulo de reconocimiento de voz local, totalmente integrado con la tarjeta gráfica RTX cinco mil setenta ti.
+
+En la fase tres mostraremos el comportamiento del teleprompter en modo manos libres, avanzando automáticamente al ritmo de la lectura sin necesidad de tocar el teclado ni el ratón.
+
+Muchas gracias por su atención.
