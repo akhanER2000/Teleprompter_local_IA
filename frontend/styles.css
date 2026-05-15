@@ -247,6 +247,38 @@ body.mode-reader .reader { display: block; }
   z-index: 3;
 }
 #overlay-status { color: var(--accent); }
+#overlay-stealth {
+  color: #ff4d6d;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-shadow: 0 0 8px rgba(255, 77, 109, 0.5);
+}
+#btn-stealth {
+  background: linear-gradient(135deg, rgba(255,77,109,0.18), rgba(255,77,109,0.05));
+  border-color: rgba(255,77,109,0.4);
+}
+#btn-stealth.unlocked {
+  background: #1c1c22;
+  border-color: var(--panel-border);
+  opacity: 0.7;
+}
+#btn-topmost {
+  background: #1c1c22;
+  border-color: var(--panel-border);
+  opacity: 0.85;
+}
+#btn-topmost.active {
+  background: linear-gradient(135deg, rgba(240,160,32,0.20), rgba(240,160,32,0.05));
+  border-color: rgba(240,160,32,0.55);
+  color: #ffd28a;
+  opacity: 1;
+}
+#overlay-topmost {
+  color: var(--warn);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 8px rgba(240,160,32,0.45);
+}
 #overlay-mode {
   color: var(--directive);
   font-weight: 600;

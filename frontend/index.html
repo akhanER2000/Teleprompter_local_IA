@@ -39,6 +39,8 @@
       <button id="btn-pause" disabled>⏸ Pausar</button>
       <button id="btn-reset" disabled>⏮ Reiniciar</button>
       <button id="btn-fullscreen">⛶ Pantalla completa</button>
+      <button id="btn-stealth" class="hidden">🛡 Stealth: BLOQUEADO</button>
+      <button id="btn-topmost" class="hidden">📌 Siempre adelante: OFF</button>
     </div>
 
     <p class="hint">
@@ -48,6 +50,8 @@
       <kbd>↑</kbd><kbd>↓</kbd> velocidad &middot;
       <kbd>←</kbd><kbd>→</kbd> retroceder/avanzar 5 palabras (<kbd>Shift</kbd>+ = 15) &middot;
       <kbd>R</kbd> reiniciar &middot;
+      <kbd>L</kbd> alternar stealth (modo invisible a captura) &middot;
+      <kbd>T</kbd> alternar siempre adelante &middot;
       <kbd>Esc</kbd> volver al setup
     </p>
   </div>
@@ -58,6 +62,8 @@
     <div class="overlay">
       <span id="overlay-mode">--</span>
       <span id="overlay-status">●</span>
+      <span id="overlay-stealth" class="hidden">🛡 STEALTH</span>
+      <span id="overlay-topmost" class="hidden">📌 ADELANTE</span>
       <span id="overlay-latency">-- ms</span>
       <span id="overlay-conf">conf --</span>
       <span id="overlay-speed" class="hidden">vel --</span>

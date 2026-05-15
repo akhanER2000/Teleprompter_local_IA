@@ -21,6 +21,7 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 echo === [4/4] Instalando dependencias del proyecto ===
 python -m pip install -r requirements.txt
+python -m pip install "pywebview[edgechromium]"
 
 echo.
 echo === Instalacion completa ===

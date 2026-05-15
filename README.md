@@ -5,6 +5,8 @@ Teleprompter con sincronización de voz en tiempo real y modo automático, **100
 ## Características Principales
 - **Modo Manos Libres (Voz):** El texto avanza a medida que hablas. Usa el modelo Whisper (`faster-whisper`) para detectar tu voz localmente con mínima latencia.
 - **Modo Auto-Scroll:** Teleprompter clásico con avance automático a velocidad ajustable.
+- **Modo Stealth (App Nativa):** Ejecución en ventana independiente (vía `pywebview`) que permite transparencia y "protección" contra capturas de pantalla de la CMD.
+- **Always on Top & Lock:** Mantén la ventana siempre al frente y bloquea la interacción para evitar clics accidentales mientras lees.
 - **Directivas de Escena:** Todo texto encerrado entre corchetes (ej. `[Mostrar en pantalla: Fase 1]`) se renderiza como una directiva visual destacada y **es ignorado** por el reconocedor de voz.
 - **Privacidad Total:** 100% de procesamiento offline. Ningún dato sale de tu equipo.
 
@@ -18,7 +20,7 @@ Teleprompter con sincronización de voz en tiempo real y modo automático, **100
 ```bat
 scripts\install.bat
 ```
-Crea `.venv\`, instala PyTorch CUDA 12.1, FastAPI, faster-whisper y todas las dependencias.
+Crea `.venv\`, instala PyTorch CUDA 12.1, FastAPI, faster-whisper, pywebview y todas las dependencias.
 
 ## Verificación de hardware (recomendado)
 ```bat
@@ -27,15 +29,20 @@ scripts\handshake.bat
 Comprueba CUDA, micrófono y transcripción Whisper.
 
 ## Ejecución
+
+### Modo Normal (Navegador)
 ```bat
 scripts\start.bat
 ```
-*(O manualmente: activa el venv y ejecuta `python -m uvicorn backend.server:app --host 127.0.0.1 --port 8765`)*
-
 - Abre tu navegador en `http://127.0.0.1:8765`.
-- Pega tu guion. **Puedes usar corchetes `[como este]` para notas visuales**.
-- Configura tamaño de letra, velocidad y carga el guion.
-- Elige entre **🎙 Manos libres** o **▶ Auto-scroll**.
+- Ideal para leer en una segunda pantalla.
+
+### Modo Stealth (App Nativa)
+```bat
+scripts\start_stealth.bat
+```
+- Lanza una ventana nativa sin bordes de consola visibles.
+- Soporta funciones de "Siempre adelante" y "Bloqueo de interacción".
 
 ## Atajos de Teclado
 | Tecla | Acción |
@@ -43,6 +50,8 @@ scripts\start.bat
 | `Espacio` | Play / Pausa (inicia en modo Voz si está en idle) |
 | `A` | Activar / Desactivar Auto-scroll |
 | `↑` / `↓` | Subir / Bajar velocidad del Auto-scroll |
+| `L` | **Stealth**: Bloquear/Desbloquear interacción (solo en App Nativa) |
+| `T` | **Topmost**: Alternar "Siempre adelante" (solo en App Nativa) |
 | `R` | Reiniciar el guion al principio |
 | `F11` | Alternar pantalla completa |
 | `Esc` | Volver al panel de configuración |
@@ -67,6 +76,7 @@ Teleprompter_local_IA/
 ├── backend/            # FastAPI + WebSocket
 ├── frontend/           # HTML/CSS/JS vanilla
 ├── scripts/            # .bat de instalación y lanzamiento
+├── launch.py           # Entry point para App Nativa (pywebview)
 └── requirements.txt
 ```
 

@@ -17,6 +17,10 @@
     btnPause: $("btn-pause"),
     btnReset: $("btn-reset"),
     btnFullscreen: $("btn-fullscreen"),
+    btnStealth: $("btn-stealth"),
+    btnTopmost: $("btn-topmost"),
+    overlayStealth: $("overlay-stealth"),
+    overlayTopmost: $("overlay-topmost"),
     reader: document.querySelector(".reader"),
     scriptView: $("script-view"),
     overlayMode: $("overlay-mode"),
@@ -479,6 +483,96 @@
       e.preventDefault();
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen();
+    }
+  });
+
+  // ===== Stealth + Topmost (ventana nativa pywebview) =====
+  // Solo activos si la app corre dentro del wrapper pywebview (launch.py).
+  // En navegador normal no existe `window.pywebview`.
+  const stealth = {
+    available: false,
+    locked: true,
+    topmost: false,
+  };
+
+  function updateStealthUI() {
+    if (!stealth.available) {
+      els.btnStealth.classList.add("hidden");
+      els.btnTopmost.classList.add("hidden");
+      els.overlayStealth.classList.add("hidden");
+      els.overlayTopmost.classList.add("hidden");
+      return;
+    }
+    els.btnStealth.classList.remove("hidden");
+    els.btnTopmost.classList.remove("hidden");
+
+    if (stealth.locked) {
+      els.btnStealth.textContent = "🛡 Stealth: BLOQUEADO";
+      els.btnStealth.classList.remove("unlocked");
+      els.overlayStealth.classList.remove("hidden");
+    } else {
+      els.btnStealth.textContent = "🔓 Stealth: visible";
+      els.btnStealth.classList.add("unlocked");
+      els.overlayStealth.classList.add("hidden");
+    }
+
+    if (stealth.topmost) {
+      els.btnTopmost.textContent = "📌 Siempre adelante: ON";
+      els.btnTopmost.classList.add("active");
+      els.overlayTopmost.classList.remove("hidden");
+    } else {
+      els.btnTopmost.textContent = "📌 Siempre adelante: OFF";
+      els.btnTopmost.classList.remove("active");
+      els.overlayTopmost.classList.add("hidden");
+    }
+  }
+
+  async function toggleStealth() {
+    if (!stealth.available) return;
+    try {
+      const newLocked = await window.pywebview.api.toggle_lock();
+      stealth.locked = newLocked;
+      updateStealthUI();
+    } catch (err) {
+      console.error("toggle_lock falló:", err);
+    }
+  }
+
+  async function toggleTopmost() {
+    if (!stealth.available) return;
+    try {
+      const newTop = await window.pywebview.api.toggle_topmost();
+      stealth.topmost = !!newTop;
+      updateStealthUI();
+    } catch (err) {
+      console.error("toggle_topmost falló:", err);
+    }
+  }
+
+  window.addEventListener("pywebviewready", async () => {
+    stealth.available = true;
+    try {
+      stealth.locked = await window.pywebview.api.is_locked();
+    } catch { /* noop */ }
+    try {
+      stealth.topmost = await window.pywebview.api.is_topmost();
+    } catch { /* noop */ }
+    updateStealthUI();
+  });
+
+  els.btnStealth.addEventListener("click", toggleStealth);
+  els.btnTopmost.addEventListener("click", toggleTopmost);
+
+  // Hotkeys:
+  //   L → alterna stealth (anti-captura)
+  //   T → alterna "siempre adelante" (topmost)
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "TEXTAREA") return;
+    if (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+    if (e.key === "l" || e.key === "L") {
+      toggleStealth();
+    } else if (e.key === "t" || e.key === "T") {
+      toggleTopmost();
     }
   });
 
