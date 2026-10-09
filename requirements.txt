@@ -1,8 +1,13 @@
+# Dependencias directas de ejecucion (Python 3.12). Versiones fijadas.
+# El arbol completo, con las dependencias transitivas, queda en requirements.lock.txt.
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 websockets==13.1
-faster-whisper==1.0.3
+faster-whisper==1.2.1
+ctranslate2==4.7.1
+# cuBLAS para CTranslate2 en CUDA sin torch (las DLL se registran en tools/cuda_dlls.py)
+nvidia-cublas-cu12==12.8.4.1
 sounddevice==0.4.7
 numpy==1.26.4
-python-multipart==0.0.9
+num2words==0.5.14
 pywebview==6.2.1

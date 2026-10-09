@@ -1,8 +1,27 @@
+# Entornos virtuales (incluye .venv312 y el respaldo .venv39_backup)
 .venv/
+.venv*/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-logs/*.log
+.pytest_cache/
+
+# Datos locales del usuario (nunca se versionan)
+models/
+data/
+logs/
+tests/fixtures/audio/
+tests/fixtures/audio_synth/
+replay_out/
+
+# Configuracion local
+config.json
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Editores y sistema
 .idea/
 .vscode/
 *.swp
