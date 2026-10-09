@@ -11,7 +11,7 @@ Teleprompter para presentaciones, grabaciones y videollamadas: el texto avanza a
 5. **Ningún error silencioso.** Todo fallo llega a la UI como `status` con `code` y queda en `logs/teleprompter.log`.
 6. **Dependencias justificadas y con versión fijada** (`requirements.txt`, `requirements-dev.txt`).
 7. **No borrar** `.venv*`, guiones ni archivos del usuario sin preguntar. Los cambios de entorno se hacen en paralelo.
-8. **Documentación en español y sin guiones largos (—) para incisos**: usar comas, paréntesis o dos puntos.
+8. **Documentación en español y sin guiones largos (U+2014) para incisos**: usar comas, paréntesis o dos puntos.
 9. **Memoria del proyecto.** Al cerrar cada fase se registra en `progress.md` qué cambió, por qué y las mediciones. Las restricciones descubiertas van en `findings.md`.
 
 ## Arquitectura

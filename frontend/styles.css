@@ -7,6 +7,7 @@
   --accent: #00e0a4;
   --accent-glow: rgba(0, 224, 164, 0.45);
   --warn: #f0a020;
+  --danger: #ff4d6d;
   --directive: #6b7aff;
   --directive-bg: rgba(107, 122, 255, 0.07);
   --panel-bg: #0f0f12;
@@ -53,6 +54,8 @@ body.mode-reader .panel { display: none; }
   font-size: 14px;
   margin: 0 0 24px;
 }
+.status[data-level="warn"] { color: var(--warn); }
+.status[data-level="error"] { color: var(--danger); }
 
 label {
   display: block;
@@ -137,6 +140,10 @@ button:active:not(:disabled) {
   transform: translateY(0);
 }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 #btn-start {
   background: linear-gradient(135deg, rgba(0,224,164,0.15), rgba(0,224,164,0.05));
@@ -159,6 +166,72 @@ kbd {
   padding: 2px 6px;
   font-family: 'Consolas', monospace;
   font-size: 12px;
+}
+
+/* ===== Avisos (barra fija arriba, en setup y en lectura) ===== */
+.notices {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(680px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 50;
+  pointer-events: none;
+}
+.notice {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  background: rgba(15, 15, 18, 0.95);
+  border: 1px solid var(--panel-border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg);
+  cursor: pointer;
+  animation: notice-in 0.18s ease-out;
+}
+.notice-info { border-left-color: var(--accent); }
+.notice-warning { border-left-color: var(--warn); }
+.notice-error {
+  border-left-color: var(--danger);
+  background: rgba(40, 12, 18, 0.95);
+}
+.notice-msg { flex: 1; }
+.notice button {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.notice .notice-action {
+  border-color: var(--accent);
+  white-space: nowrap;
+}
+.notice .notice-close {
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.notice .notice-close:hover:not(:disabled) {
+  background: transparent;
+  color: var(--fg);
+  transform: none;
+}
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice { animation: none; }
 }
 
 /* ===== Reader mode ===== */
@@ -189,11 +262,14 @@ body.mode-reader .reader { display: block; }
   font-size: 64px;
   line-height: 1.6;
   font-weight: 500;
-  white-space: pre-wrap;
+  white-space: normal;
   word-wrap: break-word;
   text-align: left;
-  scroll-behavior: smooth;
 }
+
+/* === Párrafos (un bloque por párrafo del guion) === */
+.script-view .para { margin: 0; }
+.script-view .para.gap { margin-top: 0.8em; }
 
 /* === Word spans === */
 .script-view .w {
@@ -206,6 +282,11 @@ body.mode-reader .reader { display: block; }
   text-shadow: 0 0 24px var(--accent-glow);
 }
 .script-view .w.upcoming { color: var(--fg); }
+/* Tokens sin unidades (signos sueltos): se ven, pero nunca se resaltan como actuales. */
+.script-view .w.skip.current {
+  color: var(--fg);
+  text-shadow: none;
+}
 
 /* === Directive blocks [stage directions] === */
 .script-view .directive {
@@ -223,6 +304,7 @@ body.mode-reader .reader { display: block; }
   transition: opacity 0.3s;
   line-height: 1.4;
 }
+.script-view .directive.gap { margin-top: 1.6em; }
 .script-view .directive.read {
   opacity: 0.25;
 }
@@ -241,14 +323,25 @@ body.mode-reader .reader { display: block; }
   font-size: 11px;
   color: #555;
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100vw - 36px);
+  gap: 4px 16px;
   pointer-events: none;
   user-select: none;
   z-index: 3;
 }
-#overlay-status { color: var(--accent); }
+#overlay-status { color: #888; }
+#overlay-status.on { color: var(--accent); }
+/* Indicadores de conexión y de modelo: discretos si todo va bien. */
+.overlay .ind[data-level="ok"] { color: #3f7f6c; }
+.overlay .ind[data-level="warn"] { color: var(--warn); }
+.overlay .ind[data-level="error"] {
+  color: var(--danger);
+  font-weight: 700;
+}
 #overlay-stealth {
-  color: #ff4d6d;
+  color: var(--danger);
   font-weight: 700;
   letter-spacing: 0.6px;
   text-shadow: 0 0 8px rgba(255, 77, 109, 0.5);
@@ -286,4 +379,8 @@ body.mode-reader .reader { display: block; }
   font-size: 10px;
   letter-spacing: 0.5px;
 }
+#overlay-mode[data-mode="idle"] { color: #555; }
+#overlay-mode[data-mode="voice_pending"] { color: var(--warn); }
+#overlay-mode[data-mode="voice"] { color: var(--accent); }
+#overlay-mode[data-mode="auto"] { color: var(--directive); }
 .hidden { display: none; }

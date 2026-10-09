@@ -1,32 +1,32 @@
 # PROGRESS LOG
 
-## 2026-05-15 — Inicialización B.L.A.S.T.
+## 2026-05-15 · Inicialización B.L.A.S.T.
 - Estructura de carpetas creada: `architecture/`, `tools/`, `backend/`, `frontend/`, `scripts/`, `logs/`, `guiones/`.
 - Constitución `gemini.md` redactada con Data Schema congelado.
 - Stack confirmado: Python 3.11 + FastAPI + faster-whisper + JS vanilla.
 
-## Fase 1 — Blueprint
+## Fase 1 · Blueprint
 - Discovery cerrado: entrada = micrófono default, guion = textarea/paste, salida = WebSocket JSON.
 - Schema de payload `scroll` definido (idx, matched_word, confidence, latency_ms).
 
-## Fase 2 — Link
+## Fase 2 · Link
 - `tools/check_cuda.py`: chequea torch.cuda + nombre de GPU.
 - `tools/check_audio.py`: lista dispositivos de entrada.
 - `tools/check_whisper.py`: carga `medium` en CUDA y transcribe 1 seg de silencio.
 
-## Fase 3 — Architect
+## Fase 3 · Architect
 - SOPs escritos en `architecture/`.
 - `audio_capture.py`: thread productor → cola de chunks 500 ms.
 - `stt_engine.py`: consume cola, devuelve texto + timestamps.
 - `script_matcher.py`: sliding window con normalización Unicode.
 - `backend/server.py`: orquesta los tres módulos, expone `/ws`.
 
-## Fase 4 — Stylize
+## Fase 4 · Stylize
 - UI con tipografía 64px default, contraste alto (texto blanco sobre fondo negro).
 - Textos por delante con opacidad reducida; palabra actual resaltada; texto leído atenuado.
 - Smooth scroll vía `element.scrollIntoView({behavior: 'smooth', block: 'center'})`.
 
-## Fase 5 — Trigger
+## Fase 5 · Trigger
 - `requirements.txt` con versiones congeladas.
 - `scripts/install.bat`: crea venv, instala torch CUDA + faster-whisper + FastAPI.
 - `scripts/start.bat`: activa venv, lanza uvicorn, abre navegador en `http://127.0.0.1:8765`.
@@ -69,3 +69,29 @@ Rama `fix/pulido-integral`, creada desde `main` tras adelantarla (fast-forward) 
 - [ ] Matching texto → idx: _pendiente medir, objetivo < 5 ms_
 - [ ] WebSocket round-trip: _pendiente medir, objetivo < 10 ms en localhost_
 - [ ] Total end-to-end: _pendiente medir, objetivo < 300 ms_
+
+## 2026-10-09 · Fase 1: sincronización correcta
+
+**Qué cambió**
+- `tools/text_norm.py` y `tools/script_parser.py`: el backend es la única fuente de verdad del guion. Produce segmentos `word`, `directive` y `break` y tokens con unidades de coincidencia (NFKD, sin tildes, números a palabras con `num2words`, grupos de miles). Los tokens sin unidades (guion largo, `...`, signos sueltos, emojis) conservan su índice y se marcan `skip`.
+- Protocolo v2 (`backend/protocol.py`, `backend/server.py`): posiciones absolutas, épocas (`seq`), `start` atómico con índice, `set_position` con eco, conexión nueva que reemplaza a la anterior (código 4000), cola de salida única que deja solo el último `scroll` y `level`, validación de cada mensaje sin cerrar la conexión, estado de sesión que sobrevive a las reconexiones.
+- `backend/voice.py`: bucle de voz con interfaz de captura nueva (buffer circular en `tools/audio_capture.py`, sin descartar audio), descarte de resultados obsoletos por generación y vigilancia `MIC_LOST`. Conserva la semántica de bloques de la versión anterior hasta la Fase 2.
+- `tools/stt_engine.py`: `local_files_only`, error `MODEL_MISSING` claro, warmup, fallback a CPU `int8` y, en CPU, cambio automático de un `TP_COMPUTE` no admitido a `int8`.
+- `tools/audio_file_source.py`: un WAV como micrófono en tiempo real (`TP_AUDIO_FILE`), para pruebas y demos.
+- `frontend/`: dibuja los `segments` (párrafos, saltos de línea, directivas por rango), máquina de estados explícita (VOZ solo tras `listening`), reconexión con resincronización de guion y posición, avisos visibles también en modo lectura, indicadores de conexión y de modelo, un solo keymap que ignora campos de formulario, Auto-scroll sin depender del backend.
+- `backend/config.py`: configuración centralizada (`TP_*`, `config.json` opcional, valores inválidos con advertencia).
+
+**Por qué**: resuelve C1, C2, C4, C5, A1, A2, A3, A8, A9, M5, M6, M7 y M15. Además se adelantaron partes de otras fases porque la reescritura las tocaba igual: el lifespan con carga del modelo en segundo plano (núcleo de C6), `config.py` (Fase 3), clases incrementales y keymap único (M3, M4), warmup y fallback a CPU (M8, M16) y la vía de remuestreo de la captura (parte de M13).
+
+**Revisión adversarial**: 5 revisores independientes (concurrencia, frontend, contrato, casos borde y prueba real de punta a punta) y un verificador por cada uno. Se confirmaron 22 hallazgos (unos 15 distintos) y se descartaron 3; todos se corrigieron con pruebas que los habrían detectado. El más grave: un surrogate UTF-16 suelto en el guion mataba en silencio el envío de la conexión y de cada reconexión hasta reiniciar el backend; ahora el texto se sanea y un envío fallido cierra con 1011 para que el cliente reconecte.
+
+**Mediciones** (RTX 5070 Ti, `TP_MODEL_SIZE=medium`, `TP_DEVICE=cuda`, `TP_COMPUTE=float16`, `TP_STEP_MS=350` con bloques mínimos de 0,5 s, `TP_AUDIO_FILE` con la lectura sintética de `guiones/ejemplo.txt`)
+- Pruebas: 387 pasan en ~11 s, sin GPU, micrófono ni red (antes de la fase: 12).
+- Arranque: el puerto responde de inmediato; el modelo `medium` queda listo en 2,3 s (carga 1,5 s y warmup 0,5 s).
+- Smoke test en el navegador con el modelo real y la lectura sintética como micrófono: Auto se detuvo en la palabra 12 y la voz continuó desde la 12 sin retroceder; avanzó de forma monótona hasta el final (89 de 89). Shift+← en voz dejó la posición en 74 sin rebotes. Al recargar la página se recuperaron guion, texto y posición 74. Al caer el backend aparece "Conexión perdida. Reconectando…" en modo lectura, la voz pasa a pausa y, al volver el backend sin guion, el cliente lo reenvía junto con la posición.
+- Latencias observadas: `stt_ms` mediana ~104 ms (78 a 140 ms), `lag_ms` mediana ~170 a 190 ms (92 a 234 ms).
+
+**Pendiente y riesgos**
+- Con el matcher voraz y bloques sin solapamiento, una lectura natural todavía puede quedarse pegada (en una corrida se detuvo en la palabra 50 de 89 tras dos bloques vacíos). Es exactamente C3 y A4, y se resuelve en la Fase 2.
+- Al cargar un guion que empieza con un token sin unidades (por ejemplo una viñeta con guion largo), el cursor inicial queda sobre ese token: es cosmético y se ajusta en la Fase 6.
+- `faster_whisper.decode_audio` no funciona con PyAV 19 (la app no lo usa); la Fase 5 decide la versión fijada de `av`.

@@ -17,7 +17,7 @@ Al cerrar la Fase 7, su contenido se reparte en `CLAUDE.md` y en `architecture/S
 
 | Módulo | Responsabilidad única |
 |---|---|
-| `tools/text_norm.py` | Normalizar texto a unidades de coincidencia (NFD, sin tildes, minúsculas, números a palabras). |
+| `tools/text_norm.py` | Normalizar texto a unidades de coincidencia (NFKD, sin tildes, minúsculas, números a palabras). |
 | `tools/script_parser.py` | Convertir el texto del guion en segmentos (`word`, `directive`, `break`) y tokens con unidades. |
 | `tools/script_matcher.py` | Alinear palabras transcritas con las unidades del guion y decidir el nuevo índice. |
 | `tools/transcript_filter.py` | Descartar segmentos y transcripciones que son alucinaciones o ruido (Fase 2). |
@@ -48,10 +48,10 @@ Reglas de `to_units`:
 
 1. `fold(s)`; la ñ se convierte en n (efecto natural de la descomposición, aceptado). Se usa NFKD y no NFD porque además pliega formas de compatibilidad: `º` y `ª` pasan a `o` y `a`, `²` a `2`, las ligaduras (`ﬁ`) a letras sueltas y los dígitos de ancho completo a ASCII.
 2. Se extraen las corridas alfanuméricas (`[^\W_]+`) y cada una se separa en la frontera entre letras y dígitos (`5070ti` da `5070`, `ti`).
-3. Cada corrida de dígitos se convierte con `num2words(n, lang="es")` y se vuelve a normalizar y dividir (`5070` da `cinco`, `mil`, `setenta`). Si la corrida tiene más de 12 dígitos se deja como está.
+3. Cada corrida de dígitos se convierte con `num2words(n, lang="es")` y se vuelve a normalizar y dividir (`5070` da `cinco`, `mil`, `setenta`). Si la corrida tiene más de 12 dígitos se deja como está. Antes se unen los grupos exactos de 3 dígitos separados por punto o por espacios finos (U+00A0, U+202F, U+2009), así que `10.000`, `2.500` y `1.000.000` dan `diez mil`, `dos mil quinientos` y `un millón`; la coma se trata como decimal (`1.000,50` da `mil` y `cincuenta`) y no se tocan `1.5`, `3.14` ni las direcciones IP.
 4. Todo lo demás (signos, guiones, barras, emojis) separa unidades y no produce ninguna.
 
-Ejemplos: `RTX-5070` da `["rtx", "cinco", "mil", "setenta"]`; `uno/dos` da `["uno", "dos"]`; `e-mail` da `["e", "mail"]`; `—`, `...`, `¿`, `?` y `🚀` dan `[]`; `¿Funciona?` da `["funciona"]`.
+Ejemplos: `RTX-5070` da `["rtx", "cinco", "mil", "setenta"]`; `uno/dos` da `["uno", "dos"]`; `e-mail` da `["e", "mail"]`; el guion largo (U+2014), `...`, `¿`, `?` y `🚀` dan `[]`; `¿Funciona?` da `["funciona"]`.
 
 La transcripción de Whisper se normaliza con la misma función, así que dígitos y palabras coinciden en ambos sentidos.
 
@@ -80,25 +80,25 @@ Segmentos (el mismo formato viaja en `script_loaded`):
 
 ```jsonc
 {"type": "word", "idx": 0, "text": "Hola,"}
-{"type": "word", "idx": 1, "text": "—", "skip": true}      // sin unidades
+{"type": "word", "idx": 1, "text": "\u2014", "skip": true}  // guion largo, sin unidades
 {"type": "directive", "text": "[Mostrar slide 2]", "at_idx": 3}
 {"type": "break", "kind": "paragraph"}                      // o "line"
 ```
 
 Reglas:
 
-1. CRLF y CR pasan a LF; los tabs cuentan como espacio.
+1. CRLF y CR pasan a LF; los tabs cuentan como espacio. VT, FF, NEL y U+2028 cuentan como salto de línea y U+2029 como salto de párrafo. Se eliminan en cualquier posición los caracteres invisibles de formato (U+00AD, U+200B, U+200E, U+200F, U+2060 y el BOM U+FEFF); el ZWJ se conserva para no romper emojis compuestos. Los surrogates UTF-16 sueltos se reemplazan por U+FFFD.
 2. Directivas: empiezan en `[` y terminan en el `]` que la cierra contando anidamiento (`[a [b] c]` es una sola directiva). Pueden ocupar varias líneas; su `text` conserva el contenido con los saltos internos convertidos en espacios y los espacios repetidos colapsados. Un `[` sin cierre es texto normal (se tokeniza como palabras). Un `]` suelto también es texto.
-3. `at_idx` de una directiva es el índice de la primera palabra que la sigue, o `total_tokens` si no hay ninguna.
+3. `at_idx` de una directiva es el índice de la primera palabra con unidades que la sigue (se saltan el guion largo U+2014, `...` o viñetas `-`), o `total_tokens` si no hay ninguna.
 4. Saltos: una o más líneas en blanco entre contenido producen un `break` de tipo `paragraph`; un salto simple produce `line`. Nunca hay `break` al principio, al final ni dos seguidos (gana `paragraph`). Una directiva ya se dibuja como bloque, así que los saltos que la rodean se conservan solo si son `paragraph`.
 5. Palabras: secuencias separadas por espacio en blanco. Todas reciben índice, incluidas las que no tienen unidades (con `"skip": true`).
 6. Texto vacío o solo espacios produce cero tokens y cero segmentos. Textos mayores que `MAX_SCRIPT_CHARS` lanzan `ValueError`.
 
-Clasificación de directivas en el frontend: leída si `current_idx > at_idx`, actual si `current_idx == at_idx`, próxima en el resto. Directivas consecutivas comparten `at_idx` y se activan juntas.
+Clasificación de directivas en el frontend: cada directiva cubre el rango `[s, e]`, donde `s` es el índice de la primera palabra que la sigue en `segments` y `e` es su `at_idx`. Es próxima si `current_idx < s`, actual si `s <= current_idx <= e` y leída si `current_idx > e`. Directivas consecutivas comparten rango y se activan juntas.
 
 ## 5. Matcher (`tools/script_matcher.py`)
 
-Interfaz común (la Fase 1 adapta el algoritmo voraz actual a unidades; la Fase 2 la reemplaza por el alineamiento):
+Interfaz común (la Fase 1 adapta el algoritmo voraz actual a unidades, con la ventana y el tope de avance escalados al tamaño de la transcripción y sin modo "pegajoso" por defecto; la Fase 2 la reemplaza por el alineamiento):
 
 ```python
 @dataclass
@@ -172,7 +172,7 @@ Códigos: `BAD_REQUEST`, `NO_SCRIPT`, `MODEL_NOT_READY`, `MODEL_ERROR`, `MODEL_M
 - **`load_script`.** Si estaba escuchando, primero pausa (`status: paused`). Parsea, deja la posición en 0, adopta la época y responde `script_loaded` y `state`.
 - **Conexión única con reemplazo.** Una conexión nueva (con `Origin` válido, Fase 4) reemplaza a la anterior, que se cierra con el código `4000` ("reemplazada"). El cliente que recibe `4000` no reintenta y muestra "Abierto en otra ventana" con un botón para retomar el control. Al perder o reemplazar el cliente activo, el servidor deja de escuchar (micrófono apagado sin cliente).
 - **Estado de sesión persistente.** Guion, posición, época y estado del modelo viven en el servidor y sobreviven a las reconexiones. Tras `hello`, si hay guion, el servidor envía también `script_loaded`, así una página recargada recupera guion y posición.
-- **Cola de salida única.** Cada conexión tiene una sola tarea emisora. Si hay varios `scroll` (o varios `level`) pendientes, solo se envía el último de cada tipo; el resto mantiene su orden.
+- **Cola de salida única.** Cada conexión tiene una sola tarea emisora. Si hay varios `scroll` (o varios `level`) pendientes, solo se envía el último de cada tipo; el resto mantiene su orden. Si un envío falla por algo que no sea la desconexión del cliente, el servidor cierra el socket con el código `1011` y el cliente reconecta normalmente. Los mensajes se serializan siempre a UTF-8 válido.
 - **Origin (Fase 4).** Solo se aceptan `http://127.0.0.1:<puerto>` y `http://localhost:<puerto>`; el resto se cierra con `1008` y queda en el log.
 
 ## 7. Frontend (`frontend/app.js`)
@@ -189,7 +189,7 @@ Reglas:
 2. Al cerrarse la conexión: si el modo era voz, pasa a `idle`; el Auto-scroll sigue funcionando porque es local. Se muestra "Reconectando…".
 3. Al abrir la conexión envía `hello`. Con `state` + `script_loaded` recupera guion y posición. Si el cliente tiene un guion local y el servidor no tiene ninguno (o tiene otro `script_id`), reenvía `load_script` y luego `set_position` con su posición.
 4. `send()` sin conexión avisa al usuario; las acciones de posición y guion se resincronizan solas al reconectar (paso 3), así que no hace falta encolarlas.
-5. El guion se dibuja desde `segments`: párrafos como bloques (`<p>`), saltos de línea como `<br>`, directivas como bloques. Un arreglo `wordEls[idx]` da acceso O(1); al cambiar de índice solo se actualizan las clases del rango entre el índice anterior y el nuevo, y las directivas por su `at_idx`.
+5. El guion se dibuja desde `segments`: párrafos como bloques (`<p>`), saltos de línea como `<br>`, directivas como bloques. Un arreglo `wordEls[idx]` da acceso O(1); al cambiar de índice solo se actualizan las clases del rango entre el índice anterior y el nuevo, y las directivas por su rango (sección 4).
 6. Auto-scroll solo requiere guion cargado, no el modelo. Pasar de Auto (o de pausa) a Voz envía `start` con el índice actual. Flechas y reinicio envían `set_position`.
 7. Avisos visibles en ambos modos: una barra de notificación fija arriba (toast) y en el overlay un indicador de conexión y de estado del modelo.
 8. Un único keymap. Se ignora si el foco está en `input`, `textarea`, `select` o `[contenteditable]`, o si hay modificadores (salvo Shift en flechas). Al entrar en modo lectura se quita el foco de los botones.
@@ -212,7 +212,9 @@ def read_window(self, seconds: float, since_sample: int = 0) -> tuple[np.ndarray
 - Buffer circular de `window_s * 2` segundos; nunca descarta audio por RMS.
 - Abre a 16 kHz; si el dispositivo lo rechaza, abre a su tasa nativa y remuestrea con `av.AudioResampler`.
 - Dispositivo elegible con `TP_INPUT_DEVICE` (índice) y listable vía API (Fase 6).
-- Vigilancia: si no llegan bloques durante 1,5 s mientras escucha, el bucle emite `MIC_LOST` y pausa.
+- Vigilancia: si no llegan bloques durante 1,5 s mientras escucha, el bucle emite `MIC_LOST` y pausa. El error se informa antes de detener la fuente, y la detención tiene un tope (`AUDIO_STOP_TIMEOUT_S`, 3 s): si el driver no responde, la fuente se descarta y el siguiente `start` crea otra.
+- La fuente de audio se crea en el primer `start` y se reutiliza en los siguientes (con `TP_AUDIO_FILE`, el WAV continúa donde quedó).
+- Un error del STT con código de protocolo (por ejemplo `MODEL_ERROR` por falta de memoria) llega al cliente con ese código, no como `INTERNAL`.
 
 Bucle de voz (`backend/voice.py`), Fase 2:
 
@@ -223,7 +225,7 @@ Bucle de voz (`backend/voice.py`), Fase 2:
 5. Filtra alucinaciones, normaliza con `to_units`, comprueba la época y llama al matcher; envía `scroll` si avanzó, `status: desync` y `status: listening` al entrar y salir de la desincronización, y `transcript` solo con `TP_DEBUG`.
 6. `lag_ms` mide desde el instante de captura de la última muestra de la ventana hasta el envío del `scroll`; `stt_ms` mide solo la inferencia.
 
-En la Fase 1 el bucle conserva la semántica anterior (bloques nuevos de 500 ms sin solapamiento y matcher voraz adaptado a unidades), pero ya usa esta interfaz de captura y las épocas.
+En la Fase 1 el bucle conserva la semántica anterior (bloques nuevos sin solapamiento y matcher voraz adaptado a unidades), pero ya usa esta interfaz de captura y las épocas: cada `TP_STEP_MS` lee el audio nuevo y solo transcribe cuando se acumularon al menos `MIN_CHUNK_S` (0,5 s), porque con bloques más cortos Whisper pierde casi todo el contexto (medido: con bloques de 350 ms la sincronía se detuvo en el token 16 de 89).
 
 ## 9. STT (`tools/stt_engine.py`)
 
@@ -242,6 +244,7 @@ class STTEngine:
 
 - Si falta el modelo en el disco: excepción con código `MODEL_MISSING` y un mensaje que indica cómo descargarlo.
 - Si CUDA falla al cargar o en el warmup: reintenta en CPU con `int8` y avisa con `CUDA_FALLBACK`.
+- En CPU, un `TP_COMPUTE` que CTranslate2 no admite allí (por ejemplo `float16`) se reemplaza por `int8` con una advertencia en el log.
 - `FakeSTTEngine` (`backend/fakes.py`) implementa la misma interfaz y devuelve transcripciones programadas.
 
 ## 10. Configuración (`backend/config.py`)

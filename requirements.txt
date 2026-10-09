@@ -7,6 +7,10 @@ faster-whisper==1.2.1
 ctranslate2==4.7.1
 # cuBLAS para CTranslate2 en CUDA sin torch (las DLL se registran en tools/cuda_dlls.py)
 nvidia-cublas-cu12==12.8.4.1
+# Importadas directamente por tools/ (remuestreo y decodificación con PyAV; error de
+# modelo ausente de huggingface_hub). Fijadas porque el código depende de su API exacta.
+av==19.0.1
+huggingface_hub==2.2.0
 sounddevice==0.4.7
 numpy==1.26.4
 num2words==0.5.14

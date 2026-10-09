@@ -1,211 +1,637 @@
-"""Servidor FastAPI: orquesta audio + STT + matcher y expone WebSocket."""
+"""Servidor FastAPI: sesión persistente, conexión única con reemplazo y cola de salida.
+
+Protocolo WebSocket v2 (docs/diseno_v2.md, sección 6). El puerto abre de
+inmediato: el modelo STT se carga en un hilo y su estado llega al cliente
+activo como `status` + `state`. `create_app(settings)` es la fábrica (las
+pruebas inyectan STT y audio falsos); `app` es la instancia que importan
+uvicorn y launch.py.
+"""
 from __future__ import annotations
+
 import asyncio
-import json
+import contextlib
+import itertools
 import logging
-import os
-import sys
+import threading
 import time
-from pathlib import Path
+from collections import deque
+from collections.abc import Callable, Coroutine
+from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Permitir imports desde la raíz del proyecto
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from backend.config import FRONTEND_DIR, Settings, load_settings
+from backend.fakes import FakeAudioSource, FakeSTTEngine
+from backend.protocol import (
+    Hello, LoadScript, Pause, ProtocolError, SetPosition, Start, echo_scroll_msg, encode,
+    parse_client_message, script_loaded_msg, state_msg, status_msg,
+)
+from backend.voice import VoiceLoop
+from tools.script_matcher import ScriptMatcher
+from tools.script_parser import ParsedScript, parse_script
 
-from tools.audio_capture import AudioCapture  # noqa: E402
-from tools.stt_engine import STTEngine  # noqa: E402
-from tools.script_matcher import ScriptMatcher  # noqa: E402
-
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("teleprompter")
 
-MODEL_SIZE = os.environ.get("TP_MODEL_SIZE", "medium")
-DEVICE = os.environ.get("TP_DEVICE", "cuda")
-COMPUTE = os.environ.get("TP_COMPUTE", "float16")
-LANGUAGE = os.environ.get("TP_LANGUAGE", "es")
+CLOSE_REPLACED = 4000      # el cliente no reintenta: "Abierto en otra ventana"
+CLOSE_GOING_AWAY = 1001
+CLOSE_INTERNAL_ERROR = 1011  # falló un envío: el cliente reconecta y se resincroniza
+BG_TIMEOUT_S = 5.0
+
+SttFactory = Callable[[Settings], Any]
+AudioFactory = Callable[[Settings], Any]
 
 
-app = FastAPI(title="Teleprompter Local IA")
+def default_stt_factory(settings: Settings) -> Any:
+    """Motor STT según la configuración. Se llama en el hilo de carga."""
+    if settings.fake_stt:
+        return FakeSTTEngine(model_size=settings.model_size, device=settings.device,
+                             compute_type=settings.compute_type, language=settings.language)
+    from tools.stt_engine import STTEngine  # importa faster-whisper: solo aquí
 
-FRONTEND_DIR = ROOT / "frontend"
-app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+    return STTEngine(model_size=settings.model_size, device=settings.device,
+                     compute_type=settings.compute_type, language=settings.language)
 
 
-@app.get("/")
-async def index():
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+def default_audio_factory(settings: Settings) -> Any:
+    """Fuente de audio: falsa (TP_FAKE_STT), un WAV (TP_AUDIO_FILE) o el micrófono."""
+    if settings.fake_stt:
+        return FakeAudioSource()
+    if settings.audio_file:
+        from tools.audio_file_source import AudioFileSource
+
+        return AudioFileSource(settings.audio_file, window_s=settings.window_s)
+    from tools.audio_capture import AudioCapture  # importa sounddevice: solo aquí
+
+    return AudioCapture(device=settings.input_device, window_s=settings.window_s)
 
 
-class Pipeline:
-    def __init__(self):
-        self.stt = STTEngine(model_size=MODEL_SIZE, device=DEVICE,
-                             compute_type=COMPUTE, language=LANGUAGE)
-        self.matcher = ScriptMatcher()
-        self.audio_queue: asyncio.Queue | None = None
-        self.capture: AudioCapture | None = None
-        self.worker_task: asyncio.Task | None = None
-        self.running = False
-        self.client: WebSocket | None = None
+# ---------------------------------------------------------------- salida
 
-    async def boot(self):
-        log.info("Cargando modelo STT '%s' en %s (%s)...", MODEL_SIZE, DEVICE, COMPUTE)
-        t0 = time.time()
-        await asyncio.to_thread(self.stt.load)
-        log.info("Modelo cargado en %.1f s.", time.time() - t0)
+class Outbox:
+    """Cola de salida de una conexión.
 
-    async def attach_client(self, ws: WebSocket):
-        if self.client is not None:
-            await ws.close(code=1008, reason="Solo un cliente permitido")
-            return False
-        self.client = ws
-        await self._send({"type": "status", "state": "ready",
-                          "message": f"Modelo {MODEL_SIZE} listo en {DEVICE}"})
-        return True
+    Si hay varios `scroll` (o varios `level`) pendientes, solo queda el
+    último de cada tipo, al final; el resto conserva su orden. `close()`
+    descarta lo pendiente y pide al emisor que cierre el socket.
+    """
 
-    async def detach_client(self):
-        self.client = None
-        await self.stop_listening()
+    COALESCED = frozenset({"scroll", "level"})
+    MAX_PENDING = 256  # cliente que no lee: se pierde primero lo prescindible
 
-    async def _send(self, payload: dict):
-        if self.client is None:
+    def __init__(self) -> None:
+        self._items: deque[dict] = deque()
+        self._wakeup = asyncio.Event()
+        self.close_request: tuple[int, str] | None = None
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def pending(self) -> list[dict]:
+        return list(self._items)
+
+    def put(self, msg: dict) -> None:
+        if self.close_request is not None:
             return
-        try:
-            await self.client.send_text(json.dumps(payload))
-        except Exception:
-            pass
+        kind = msg.get("type")
+        if kind in self.COALESCED:
+            self._remove_first(kind)  # como mucho hay uno pendiente de cada tipo
+        self._items.append(msg)
+        if len(self._items) > self.MAX_PENDING:
+            if not (self._remove_first("transcript") or self._remove_first("level")):
+                self._items.popleft()
+        self._wakeup.set()
 
-    async def start_listening(self):
-        if self.running:
-            return
-        if not self.matcher.tokens:
-            await self._send({"type": "status", "state": "error",
-                              "message": "Carga un guion antes de iniciar."})
-            return
-        self.running = True
-        self.audio_queue = asyncio.Queue(maxsize=4)
-        loop = asyncio.get_running_loop()
-        self.capture = AudioCapture(self.audio_queue, loop)
-        try:
-            self.capture.start()
-        except Exception as e:
-            self.running = False
-            await self._send({"type": "status", "state": "error",
-                              "message": f"Micrófono: {e}"})
-            return
-        self.worker_task = asyncio.create_task(self._worker())
-        await self._send({"type": "status", "state": "listening",
-                          "message": "Escuchando..."})
+    def _remove_first(self, kind: str) -> bool:
+        for i, item in enumerate(self._items):
+            if item.get("type") == kind:
+                del self._items[i]
+                return True
+        return False
 
-    async def stop_listening(self):
-        self.running = False
-        if self.capture is not None:
-            self.capture.stop()
-            self.capture = None
-        if self.worker_task is not None:
-            self.worker_task.cancel()
-            try:
-                await self.worker_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self.worker_task = None
-        await self._send({"type": "status", "state": "paused", "message": "Pausado."})
+    def close(self, code: int, reason: str) -> None:
+        if self.close_request is None:
+            self.close_request = (code, reason)
+            self._items.clear()
+            self._wakeup.set()
 
-    async def _worker(self):
-        assert self.audio_queue is not None
-        while self.running:
-            try:
-                chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            try:
-                tr = await self.stt.transcribe(chunk.samples, chunk.timestamp_ms)
-            except Exception as e:
-                log.exception("STT error: %s", e)
-                continue
-            if not tr.text:
-                continue
-            await self._send({"type": "transcript", "text": tr.text, "is_final": False})
-            result = self.matcher.update(tr.text)
-            await self._send({
-                "type": "scroll",
-                "current_idx": result.new_idx,
-                "matched_word": result.matched_word,
-                "confidence": result.confidence,
-                "latency_ms": tr.latency_ms,
-            })
+    async def get(self) -> dict | None:
+        """Siguiente mensaje, o None si se pidió cerrar."""
+        while True:
+            if self.close_request is not None:
+                return None
+            if self._items:
+                return self._items.popleft()
+            self._wakeup.clear()
+            await self._wakeup.wait()
 
-    async def handle_action(self, msg: dict):
-        action = msg.get("action")
-        if action == "load_script":
-            text = msg.get("text", "")
-            self.matcher.load_script(text)
-            await self._send({"type": "status", "state": "ready",
-                              "message": f"Guion cargado: {len(self.matcher.tokens)} palabras."})
-            await self._send({"type": "scroll", "current_idx": 0,
-                              "matched_word": None, "confidence": 1.0, "latency_ms": 0})
-        elif action == "start":
-            await self.start_listening()
-        elif action == "pause":
-            await self.stop_listening()
-        elif action == "reset":
-            self.matcher.reset(0)
-            self._drain_audio_queue()
-            await self._send({"type": "scroll", "current_idx": 0,
-                              "matched_word": None, "confidence": 1.0, "latency_ms": 0})
-        elif action == "set_position":
-            idx = int(msg.get("idx", 0))
-            self.matcher.reset(idx)
-            self._drain_audio_queue()
-            await self._send({"type": "scroll", "current_idx": self.matcher.current_idx,
-                              "matched_word": None, "confidence": 1.0, "latency_ms": 0})
-        elif action == "step":
-            delta = int(msg.get("delta", 0))
-            self.matcher.reset(self.matcher.current_idx + delta)
-            self._drain_audio_queue()
-            await self._send({"type": "scroll", "current_idx": self.matcher.current_idx,
-                              "matched_word": None, "confidence": 1.0, "latency_ms": 0})
 
-    def _drain_audio_queue(self):
-        """Descarta chunks de audio ya capturados pero aún sin transcribir.
-        Tras un reposicionamiento manual, el audio buffereado pertenece al
-        instante previo al salto y reintroduciría la posición vieja."""
-        if self.audio_queue is None:
-            return
+class Connection:
+    """Una conexión WebSocket con su cola y su única tarea emisora."""
+
+    _ids = itertools.count(1)
+
+    def __init__(self, ws: WebSocket) -> None:
+        self.ws = ws
+        self.id = next(self._ids)
+        self.outbox = Outbox()
+        self.client_name: str | None = None
+        self._closed = False
+        self._sender: asyncio.Task | None = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def start(self) -> None:
+        self._sender = asyncio.create_task(self._send_loop(), name=f"ws-sender-{self.id}")
+
+    def send(self, msg: dict) -> None:
+        if not self._closed:
+            self.outbox.put(msg)
+
+    def close(self, code: int, reason: str) -> None:
+        """Cierra tras descartar lo pendiente (lo hace la tarea emisora)."""
+        if not self._closed:
+            self._closed = True
+            self.outbox.close(code, reason)
+
+    def abort(self) -> None:
+        """El socket ya se cerró: detiene la tarea emisora sin enviar nada."""
+        self._closed = True
+        if self._sender is not None and not self._sender.done():
+            self._sender.cancel()
+
+    async def _send_loop(self) -> None:
         try:
             while True:
-                self.audio_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
+                msg = await self.outbox.get()
+                if msg is None:
+                    code, reason = self.outbox.close_request or (CLOSE_GOING_AWAY, "")
+                    await self.ws.close(code=code, reason=reason)
+                    return
+                try:
+                    text = encode(msg)
+                except (TypeError, ValueError):
+                    log.exception("Mensaje %r no serializable; se descarta.", msg.get("type"))
+                    continue
+                await self.ws.send_text(text)
+        except asyncio.CancelledError:
+            raise
+        except WebSocketDisconnect:  # el cliente ya cerró el socket
+            self._closed = True
+            log.debug("Conexión %d: el cliente cerró durante un envío.", self.id)
+        except Exception as exc:
+            # Un emisor muerto con el socket abierto dejaría al cliente sin
+            # respuestas y sin motivo para reconectar (y a la sesión con una
+            # conexión zombi): se cierra el socket. Al recibir el cierre, el
+            # bucle de recepción termina y `detach` limpia la sesión.
+            self._closed = True
+            request = self.outbox.close_request
+            if request is None:
+                log.warning("Conexión %d: falló un envío (%s: %s); se cierra la conexión.",
+                            self.id, type(exc).__name__, exc)
+                request = (CLOSE_INTERNAL_ERROR, "error al enviar")
+            else:
+                log.debug("Conexión %d: falló el cierre (%s).", self.id, exc)
+            with contextlib.suppress(Exception):
+                await self.ws.close(code=request[0], reason=request[1])
 
 
-pipeline = Pipeline()
+# ---------------------------------------------------------------- sesión
+
+class Session:
+    """Estado que sobrevive a las reconexiones: guion, posición, época, modelo y escucha."""
+
+    def __init__(self, settings: Settings, stt_factory: SttFactory,
+                 audio_factory: AudioFactory) -> None:
+        self.settings = settings
+        self._stt_factory = stt_factory
+        self._audio_factory = audio_factory
+        self.stt: Any = None
+        self.model_state = "loading"
+        self.model_code: str | None = None
+        self.model_message = f"Cargando el modelo {settings.model_size}…"
+        self.device_in_use = settings.device
+        self.cuda_fallback = False
+        self.script: ParsedScript | None = None
+        self.matcher = ScriptMatcher()
+        self.epoch = 0         # último `seq` adoptado; va en cada scroll
+        self.generation = 0    # sube en cada reposicionamiento (aunque falte `seq`)
+        self.voice: VoiceLoop | None = None
+        self.conn: Connection | None = None
+        self._infer_lock = threading.Lock()
+        # La fuente de audio se crea en el primer start y se reutiliza: un WAV
+        # (TP_AUDIO_FILE) sigue donde quedó al reanudar en vez de volver a 0.
+        self._audio: Any = None
+        self._start_lock = asyncio.Lock()      # un start a la vez abre la fuente
+        self._stopping: set[asyncio.Task] = set()  # detenciones de bucles en curso
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._closed = False
+        self._bg: set[asyncio.Task] = set()
+
+    @property
+    def listening(self) -> bool:
+        return self.voice is not None
+
+    def state(self) -> dict:
+        script = self.script
+        return state_msg(
+            model=self.model_state, model_name=self.settings.model_size,
+            device=self.device_in_use, listening=self.listening,
+            script_id=script.script_id if script else None,
+            total_tokens=script.total_tokens if script else 0,
+            current_idx=self.matcher.current_idx if script else 0,
+            epoch=self.epoch, debug=self.settings.debug)
+
+    def script_loaded(self) -> dict:
+        assert self.script is not None
+        return script_loaded_msg(
+            script_id=self.script.script_id, total_tokens=self.script.total_tokens,
+            epoch=self.epoch, text=self.script.text, segments=self.script.segments)
+
+    def send(self, msg: dict) -> None:
+        """Envía al cliente activo, si hay uno."""
+        conn = self.conn
+        if conn is not None:
+            conn.send(msg)
+
+    def _active(self, conn: Connection) -> bool:
+        # `conn.closed`: su emisor murió (el socket se está cerrando); no debe
+        # abrir el micrófono ni cambiar la sesión sin poder responder.
+        return conn is self.conn and not conn.closed and not self._closed
+
+    # ------------------------------------------------------------ modelo
+
+    def start_model_loading(self) -> None:
+        """Carga el modelo en un hilo daemon: el puerto abre sin esperar."""
+        self._loop = asyncio.get_running_loop()
+        threading.Thread(target=self._load_model, name="stt-load", daemon=True).start()
+
+    def _load_model(self) -> None:  # hilo de carga
+        s = self.settings
+        log.info("Cargando el modelo STT%s '%s' en %s (%s)...", " falso" if s.fake_stt else "",
+                 s.model_size, s.device, s.compute_type)
+        t0 = time.monotonic()
+        try:
+            engine = self._stt_factory(s)
+            engine.load()
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code in ("MODEL_MISSING", "MODEL_ERROR"):  # STTError: mensaje ya en español
+                log.error("No se pudo cargar el modelo (%s): %s", code, exc,
+                          exc_info=code == "MODEL_ERROR")
+                message = str(exc)
+            else:
+                log.exception("No se pudo cargar el modelo.")
+                code, message = "MODEL_ERROR", f"No se pudo cargar el modelo {s.model_size}: {exc}"
+            self._call_in_loop(self._on_model_failed, code, message)
+            return
+        log.info("Modelo cargado en %.1f s.", time.monotonic() - t0)
+        self._call_in_loop(self._on_model_ready, engine)
+
+    def _call_in_loop(self, fn: Callable[..., None], *args: Any) -> None:
+        try:
+            assert self._loop is not None
+            self._loop.call_soon_threadsafe(fn, *args)
+        except RuntimeError:  # el loop ya se cerró (apagado durante la carga)
+            log.debug("Loop cerrado: se ignora el resultado de la carga del modelo.")
+
+    def _on_model_ready(self, engine: Any) -> None:
+        if self._closed:
+            return
+        self.stt = engine
+        self.model_state, self.model_code = "ready", None
+        self.device_in_use = getattr(engine, "device_in_use", None) or self.settings.device
+        self.cuda_fallback = self.settings.device == "cuda" and self.device_in_use == "cpu"
+        self.model_message = f"Modelo {self.settings.model_size} listo ({self.device_in_use})."
+        if self.cuda_fallback:
+            log.warning("CUDA no disponible: el modelo corre en CPU.")
+        self.send(status_msg("ready", self.model_message))
+        for msg in self._model_status_msgs():
+            self.send(msg)
+        self.send(self.state())
+
+    def _on_model_failed(self, code: str, message: str) -> None:
+        if self._closed:
+            return
+        self.model_state, self.model_code, self.model_message = "error", code, message
+        for msg in self._model_status_msgs():
+            self.send(msg)
+        self.send(self.state())
+
+    def _model_status_msgs(self) -> list[dict]:
+        """Avisos del modelo que un cliente debe ver (al cambiar o al saludar)."""
+        if self.model_state == "loading":
+            return [status_msg("loading", self.model_message)]
+        if self.model_state == "error":
+            return [status_msg("error", self.model_message, self.model_code)]
+        if self.cuda_fallback:
+            reason = getattr(self.stt, "fallback_reason", None)
+            detail = f" ({reason})" if reason else ""
+            return [status_msg("warning", "CUDA no está disponible: el modelo corre en CPU, "
+                                          f"más lento{detail}.", "CUDA_FALLBACK")]
+        return []
+
+    # ------------------------------------------------------------ conexiones
+
+    async def attach(self, conn: Connection) -> None:
+        """La conexión nueva pasa a ser la activa y reemplaza a la anterior."""
+        conn.start()
+        if self._closed:
+            conn.close(CLOSE_GOING_AWAY, "servidor detenido")
+            return
+        old, self.conn = self.conn, conn
+        if old is not None:
+            log.info("Conexión %d reemplaza a la %d.", conn.id, old.id)
+            old.close(CLOSE_REPLACED, "reemplazada")
+            # Sin esperar a la fuente de audio: el cliente nuevo empieza a
+            # recibir ya, y un start posterior espera a que termine de pararse.
+            if self._halt_listening() is not None:
+                log.info("Escucha detenida: la conexión anterior fue reemplazada.")
+
+    async def detach(self, conn: Connection) -> None:
+        conn.abort()
+        if self.conn is not conn:
+            return
+        self.conn = None
+        if self._halt_listening() is not None:
+            log.info("Escucha detenida: el cliente se desconectó.")
+
+    async def handle_raw(self, conn: Connection, raw: str | bytes) -> None:
+        """Valida y despacha un mensaje del cliente. Nunca cierra la conexión."""
+        if not self._active(conn):
+            return  # conexión reemplazada: se ignora
+        total = self.script.total_tokens if self.script is not None else None
+        try:
+            msg = parse_client_message(raw, total)
+        except ProtocolError as exc:
+            log.info("Mensaje inválido: %s", exc.message)
+            conn.send(status_msg("error", exc.message, exc.code))
+            return
+        try:
+            await self._dispatch(conn, msg)
+        except Exception:
+            log.exception("Error al procesar la acción %r.", msg.action)
+            if self._active(conn):
+                conn.send(status_msg("error", "Error interno al procesar la acción.", "INTERNAL"))
+
+    async def _dispatch(self, conn: Connection, msg: Any) -> None:
+        if isinstance(msg, Hello):
+            self._on_hello(conn, msg)
+        elif isinstance(msg, LoadScript):
+            await self._on_load_script(conn, msg)
+        elif isinstance(msg, Start):
+            await self._on_start(conn, msg)
+        elif isinstance(msg, Pause):
+            await self._on_pause(conn)
+        elif isinstance(msg, SetPosition):
+            self._on_set_position(conn, msg)
+        else:  # set_input_device y mic_test: Fase 6
+            conn.send(status_msg("error", f"La acción '{msg.action}' no está disponible todavía.",
+                                 "BAD_REQUEST"))
+
+    # ------------------------------------------------------------ acciones
+
+    def _on_hello(self, conn: Connection, msg: Hello) -> None:
+        conn.client_name = msg.client
+        log.info("Conexión %d: hello de %s.", conn.id, msg.client or "un cliente sin nombre")
+        conn.send(self.state())
+        if self.script is not None:
+            conn.send(self.script_loaded())
+        for status in self._model_status_msgs():
+            conn.send(status)
+
+    async def _on_load_script(self, conn: Connection, msg: LoadScript) -> None:
+        if await self._stop_listening():
+            if not self._active(conn):
+                return
+            conn.send(status_msg("paused", "Escucha pausada para cargar el guion."))
+        try:
+            parsed = await asyncio.to_thread(parse_script, msg.text)
+        except ValueError as exc:
+            if self._active(conn):
+                conn.send(status_msg("error", f"No se pudo cargar el guion: {exc}", "BAD_REQUEST"))
+            return
+        if not self._active(conn):
+            return
+        self.script = parsed
+        self.matcher = ScriptMatcher(parsed.tokens)
+        self._reposition(msg.seq)
+        log.info("Guion cargado: %d palabras.", parsed.total_tokens)
+        conn.send(self.script_loaded())
+        conn.send(self.state())
+
+    async def _on_start(self, conn: Connection, msg: Start) -> None:
+        """Atómico: posición y escucha, o error sin cambiar nada."""
+        if self.script is None:
+            self._reject_start(conn, "NO_SCRIPT", "Carga un guion antes de iniciar Manos libres.")
+            return
+        if self.model_state != "ready" or self.stt is None:
+            if self.model_state == "loading":
+                text = "El modelo de voz todavía se está cargando."
+            else:
+                text = f"El modelo de voz no está disponible: {self.model_message}"
+            self._reject_start(conn, "MODEL_NOT_READY", text)
+            return
+        if self.voice is None:
+            async with self._start_lock:
+                # Una detención anterior (pausa, MIC_LOST, reemplazo) tiene que
+                # terminar antes de reabrir la misma fuente; si no, su stop()
+                # tardío apagaría la fuente del bucle nuevo.
+                await self._wait_stopping()
+                if not self._active(conn):
+                    return
+                if self.voice is None:  # otro start pudo instalarlo mientras se esperaba
+                    if not await self._open_voice(conn):
+                        return
+        idx = self.matcher.current_idx if msg.idx is None else msg.idx
+        self._reposition(msg.seq, idx)
+        conn.send(status_msg("listening", "Escuchando…"))
+        conn.send(echo_scroll_msg(self.matcher.current_idx, self.epoch))
+
+    async def _open_voice(self, conn: Connection) -> bool:
+        """Abre la fuente de audio y lanza el bucle (con `_start_lock` tomado).
+
+        Devuelve True si quedó escuchando. Si falla responde MIC_ERROR; si la
+        conexión dejó de ser la activa mientras se abría, lo descarta.
+        """
+        voice: VoiceLoop | None = None
+        try:
+            if self._audio is None:
+                self._audio = await asyncio.to_thread(self._audio_factory, self.settings)
+            voice = VoiceLoop(self, self._audio, self.stt, self.settings,
+                              infer_lock=self._infer_lock)
+            await voice.start()
+        except asyncio.CancelledError:
+            if voice is not None:
+                self._stop_voice(voice)
+            raise
+        except Exception as exc:
+            log.warning("No se pudo abrir el micrófono: %s", exc)
+            if voice is not None:
+                await asyncio.shield(self._stop_voice(voice))
+            if self._active(conn):
+                self._reject_start(conn, "MIC_ERROR", f"No se pudo abrir el micrófono: {exc}")
+            return False
+        if not self._active(conn):  # otra conexión tomó el control mientras se abría
+            await asyncio.shield(self._stop_voice(voice))
+            return False
+        self.voice = voice
+        log.info("Escuchando.")
+        return True
+
+    def _reject_start(self, conn: Connection, code: str, message: str) -> None:
+        conn.send(status_msg("error", message, code))
+        conn.send(self.state())
+
+    async def _on_pause(self, conn: Connection) -> None:
+        if await self._stop_listening():
+            log.info("Escucha pausada.")
+        if self._active(conn):
+            conn.send(status_msg("paused", "Pausado."))
+
+    def _on_set_position(self, conn: Connection, msg: SetPosition) -> None:
+        if self.script is None:
+            conn.send(status_msg("error", "No hay guion cargado.", "NO_SCRIPT"))
+            return
+        self._reposition(msg.seq, msg.idx)
+        conn.send(echo_scroll_msg(self.matcher.current_idx, self.epoch))
+
+    def _reposition(self, seq: int | None, idx: int | None = None) -> None:
+        """Aplica posición y época e invalida el audio y la inferencia en curso."""
+        if idx is not None:
+            self.matcher.set_position(idx)
+        if seq is not None:
+            self.epoch = seq
+        self.generation += 1
+        if self.voice is not None:
+            self.voice.discard_audio()
+
+    # ------------------------------------------------------------ escucha
+
+    async def _stop_listening(self) -> bool:
+        """Detiene la escucha y espera a la fuente de audio. Devuelve si escuchaba."""
+        task = self._halt_listening()
+        if task is None:
+            return False
+        await asyncio.shield(task)  # acotada por VoiceLoop.stop
+        return True
+
+    def _halt_listening(self) -> asyncio.Task | None:
+        """Deja de escuchar ya (síncrono) y lanza la detención de la fuente.
+
+        Devuelve la tarea de detención, o None si no escuchaba. Desde aquí el
+        bucle no emite nada más y `listening` es False.
+        """
+        voice, self.voice = self.voice, None
+        if voice is None:
+            return None
+        return self._stop_voice(voice)
+
+    def _stop_voice(self, voice: VoiceLoop) -> asyncio.Task:
+        """Detiene un bucle en segundo plano; `_wait_stopping` la espera antes de un start."""
+        voice.halt()  # síncrono: el bucle ya no emite nada
+        task = self._spawn(self._finish_stop(voice))
+        self._stopping.add(task)
+        task.add_done_callback(self._stopping.discard)
+        return task
+
+    async def _finish_stop(self, voice: VoiceLoop) -> None:
+        if not await voice.stop() and voice.audio is self._audio:
+            log.warning("La fuente de audio quedó atascada; el próximo start crea otra.")
+            self._audio = None
+
+    async def _wait_stopping(self) -> None:
+        pending = [t for t in self._stopping if not t.done()]
+        if pending:
+            await asyncio.wait(pending)  # cada una está acotada por VoiceLoop.stop
+
+    async def voice_stopped(self, voice: VoiceLoop, code: str, message: str) -> None:
+        """El bucle de voz terminó por un error (MIC_LOST, MODEL_ERROR, INTERNAL...).
+
+        Primero se informa y después se detiene la fuente: un driver lento al
+        cerrar un micrófono que desapareció no retrasa el aviso, y ningún
+        mensaje de un start posterior puede quedar antes que este error.
+        """
+        if voice is not self.voice:
+            return
+        self._halt_listening()
+        self.send(status_msg("error", message, code))
+        self.send(self.state())
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.ensure_future(coro)
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+        return task
+
+    async def shutdown(self) -> None:
+        self._closed = True
+        self._halt_listening()
+        conn, self.conn = self.conn, None
+        if conn is not None:
+            conn.close(CLOSE_GOING_AWAY, "servidor detenido")
+        pending = [t for t in self._bg if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=BG_TIMEOUT_S)
 
 
-@app.on_event("startup")
-async def _on_startup():
-    await pipeline.boot()
+# ---------------------------------------------------------------- app
+
+def create_app(settings: Settings | None = None, *,
+               stt_factory: SttFactory | None = None,
+               audio_factory: AudioFactory | None = None) -> FastAPI:
+    """Crea la app. Las fábricas permiten inyectar STT y audio (pruebas)."""
+    # No hace nada si el lanzador ya configuró el logging raíz (launch.py).
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    if settings is None:
+        settings = load_settings()
+    logging.getLogger("teleprompter").setLevel(settings.log_level)
+    logging.getLogger("faster_whisper").setLevel(logging.WARNING)  # una línea INFO por inferencia
+    session = Session(settings, stt_factory or default_stt_factory,
+                      audio_factory or default_audio_factory)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        log.info("Configuración: %s", settings)
+        session.start_model_loading()
+        try:
+            yield
+        finally:
+            await session.shutdown()
+
+    app = FastAPI(title="Teleprompter Local IA", lifespan=lifespan)
+    app.state.settings = settings
+    app.state.session = session
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+    @app.get("/")
+    async def index():
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+    @app.websocket("/ws")
+    async def ws_endpoint(ws: WebSocket) -> None:
+        # Fase 4: validar aquí ws.headers.get("origin") y cerrar con 1008 antes de accept().
+        await ws.accept()
+        conn = Connection(ws)
+        try:
+            await session.attach(conn)
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                raw = message.get("text")
+                if raw is None:
+                    raw = message.get("bytes") or b""  # binario: BAD_REQUEST
+                await session.handle_raw(conn, raw)
+        finally:
+            await session.detach(conn)
+
+    return app
 
 
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    ok = await pipeline.attach_client(ws)
-    if not ok:
-        return
-    try:
-        while True:
-            raw = await ws.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            await pipeline.handle_action(msg)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await pipeline.detach_client()
+app = create_app()
