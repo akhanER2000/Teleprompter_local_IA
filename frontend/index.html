@@ -35,6 +35,12 @@
       <input type="range" id="auto-speed" min="1" max="10" step="0.5" value="3" />
     </div>
 
+    <div class="row hidden" id="row-opacity">
+      <label for="opacity">Transparencia de la ventana: <span id="opacity-label">0</span> %</label>
+      <input type="range" id="opacity" min="0" max="70" step="5" value="0" />
+      <button id="btn-preview" type="button" title="Muestra unos segundos cómo se ve el modo lectura">👁 Vista previa</button>
+    </div>
+
     <div class="buttons">
       <button id="btn-load">Cargar guion</button>
       <button id="btn-start" disabled>🎙 Manos libres</button>
@@ -55,13 +61,18 @@
       <kbd>Esc</kbd> volver al setup &middot;
       <kbd>F11</kbd> pantalla completa &middot;
       <kbd>L</kbd> alternar stealth (invisible en capturas, app nativa) &middot;
-      <kbd>T</kbd> alternar siempre adelante (app nativa)
+      <kbd>T</kbd> alternar siempre adelante (app nativa) &middot;
+      <kbd>O</kbd> transparencia sí/no (app nativa)
     </p>
   </div>
 
   <div id="reader" class="reader">
     <div class="reticle"></div>
     <div id="script-view" class="script-view"></div>
+    <div id="preview-sample" class="preview-sample hidden">
+      <p><span class="w read">Así</span> <span class="w read">se</span> <span class="w read">verá</span> <span class="w current">el</span> <span class="w upcoming">texto</span> <span class="w upcoming">de</span> <span class="w upcoming">tu</span> <span class="w upcoming">teleprompter</span> <span class="w upcoming">con</span> <span class="w upcoming">esta</span> <span class="w upcoming">transparencia.</span> <span class="w upcoming">Lo</span> <span class="w upcoming">que</span> <span class="w upcoming">haya</span> <span class="w upcoming">detrás</span> <span class="w upcoming">de</span> <span class="w upcoming">la</span> <span class="w upcoming">ventana</span> <span class="w upcoming">se</span> <span class="w upcoming">alcanza</span> <span class="w upcoming">a</span> <span class="w upcoming">ver.</span></p>
+    </div>
+    <div id="preview-banner" class="preview-banner hidden"></div>
     <div class="overlay">
       <span id="overlay-mode">--</span>
       <span id="overlay-status">●</span>
@@ -70,6 +81,7 @@
       <span id="overlay-model" class="ind">Modelo --</span>
       <span id="overlay-stealth" class="hidden">🛡 STEALTH</span>
       <span id="overlay-topmost" class="hidden">📌 ADELANTE</span>
+      <span id="overlay-opacity" class="hidden">◐ --</span>
       <span id="overlay-lag">lag -- ms</span>
       <span id="overlay-stt">stt -- ms</span>
       <span id="overlay-conf">conf --</span>

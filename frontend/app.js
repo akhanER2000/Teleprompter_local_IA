@@ -1068,6 +1068,7 @@
   }
 
   function exitReaderMode() {
+    endPreview();
     els.body.classList.remove("mode-reader");
     els.body.classList.add("mode-setup");
     state.lastLineTop = null;
@@ -1341,6 +1342,125 @@
   els.btnStealth.addEventListener("click", toggleStealth);
   els.btnTopmost.addEventListener("click", toggleTopmost);
 
+  // ===== Transparencia de la ventana (solo app nativa) =====
+  // La opacidad se aplica en vivo mientras se mueve el control: la ventana
+  // misma es la previsualización. "Vista previa" muestra unos segundos el
+  // modo lectura (con el guion cargado o un texto de ejemplo).
+  const PREVIEW_MS = 6000;
+  const DEFAULT_CHOSEN_OPACITY = 0.7;
+  var opacityEls = {
+    row: $("row-opacity"),
+    slider: $("opacity"),
+    label: $("opacity-label"),
+    btnPreview: $("btn-preview"),
+    sample: $("preview-sample"),
+    banner: $("preview-banner"),
+    overlay: $("overlay-opacity"),
+  };
+  var transp = {
+    current: 1.0,                 // opacidad aplicada ahora
+    chosen: 1.0,                  // la elegida con el control (la que alterna O)
+    pending: null,                // valor a aplicar en el próximo frame
+    previewTimer: null,
+  };
+
+  const pct = (opacity) => Math.round((1 - opacity) * 100);
+
+  function updateOpacityUI() {
+    if (!stealth.available) return;
+    opacityEls.row.classList.remove("hidden");
+    opacityEls.slider.value = String(pct(transp.chosen));
+    opacityEls.label.textContent = String(pct(transp.chosen));
+    const t = pct(transp.current);
+    opacityEls.overlay.textContent = `◐ ${t} %`;
+    opacityEls.overlay.classList.toggle("hidden", t === 0);
+  }
+
+  async function applyOpacity(opacity, persist) {
+    if (!stealth.available) return;
+    try {
+      const applied = await window.pywebview.api.set_opacity(opacity, !!persist);
+      transp.current = typeof applied === "number" ? applied : opacity;
+    } catch (err) {
+      console.error("set_opacity falló:", err);
+      notify("warning", "No se pudo cambiar la transparencia de la ventana.", { channel: "native" });
+    }
+    updateOpacityUI();
+  }
+
+  function onOpacityInput() {
+    const opacity = 1 - (parseFloat(opacityEls.slider.value) || 0) / 100;
+    transp.chosen = opacity;
+    opacityEls.label.textContent = opacityEls.slider.value;
+    if (transp.pending === null) {
+      requestAnimationFrame(() => {
+        const value = transp.pending;
+        transp.pending = null;
+        if (value !== null) applyOpacity(value, false);
+      });
+    }
+    transp.pending = opacity;
+  }
+
+  function onOpacityChange() {
+    transp.chosen = 1 - (parseFloat(opacityEls.slider.value) || 0) / 100;
+    applyOpacity(transp.chosen, true);   // se recuerda al reabrir
+  }
+
+  function toggleOpacity() {
+    if (!stealth.available) return;
+    if (transp.current < 1) {
+      applyOpacity(1.0, false);
+    } else {
+      applyOpacity(transp.chosen < 1 ? transp.chosen : DEFAULT_CHOSEN_OPACITY, false);
+    }
+  }
+
+  function endPreview() {
+    if (!transp || !opacityEls) return;   // aún no inicializado
+    if (transp.previewTimer) {
+      clearTimeout(transp.previewTimer);
+      transp.previewTimer = null;
+    }
+    opacityEls.sample.classList.add("hidden");
+    opacityEls.banner.classList.add("hidden");
+  }
+
+  function startPreview() {
+    endPreview();
+    const hasScript = !!els.scriptView.querySelector("[data-idx]");
+    if (!hasScript) {
+      opacityEls.sample.style.fontSize = els.scriptView.style.fontSize;
+      opacityEls.sample.style.lineHeight = els.scriptView.style.lineHeight;
+      opacityEls.sample.classList.remove("hidden");
+    }
+    opacityEls.banner.textContent =
+      `Vista previa · transparencia ${pct(transp.current)} % · Esc para volver`;
+    opacityEls.banner.classList.remove("hidden");
+    enterReaderMode();
+    transp.previewTimer = setTimeout(() => {
+      transp.previewTimer = null;
+      // Si el usuario empezó a leer durante la vista previa, se queda en lectura.
+      if (state.mode === "idle") exitReaderMode();
+      else endPreview();
+    }, PREVIEW_MS);
+  }
+
+  opacityEls.slider.addEventListener("input", onOpacityInput);
+  opacityEls.slider.addEventListener("change", onOpacityChange);
+  opacityEls.btnPreview.addEventListener("click", startPreview);
+
+  window.addEventListener("pywebviewready", async () => {
+    try {
+      const saved = await window.pywebview.api.get_opacity();
+      if (typeof saved === "number") {
+        transp.current = saved;
+        transp.chosen = saved;
+      }
+    } catch { /* noop */ }
+    updateOpacityUI();
+  });
+
   // ===== Atajos (un único keymap) =====
   function isEditable(el) {
     if (!el || el === document.body) return false;
@@ -1410,6 +1530,10 @@
       case "t":
       case "T":
         toggleTopmost();   // siempre adelante (solo app nativa)
+        break;
+      case "o":
+      case "O":
+        toggleOpacity();   // transparencia sí/no (solo app nativa)
         break;
       default:
         break;

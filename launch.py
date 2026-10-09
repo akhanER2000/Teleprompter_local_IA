@@ -52,7 +52,63 @@ WDA_EXCLUDE_FROM_CAPTURE = 0x00000011
 
 WINDOW_TITLE = "Teleprompter Local IA"
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = int(os.environ.get("TP_PORT", "8765"))
+
+# Transparencia de la ventana (WS_EX_LAYERED + alfa). Verificado con WebView2:
+# sigue renderizando en vivo y la exclusión de captura se mantiene.
+GWL_EXSTYLE = -20
+WS_EX_LAYERED = 0x00080000
+LWA_ALPHA = 0x2
+MIN_OPACITY = 0.30
+WINDOW_PREFS = ROOT / "data" / "ventana.json"
+
+
+def _load_window_prefs() -> dict:
+    try:
+        import json
+        return json.loads(WINDOW_PREFS.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_window_prefs(prefs: dict) -> None:
+    try:
+        import json
+        WINDOW_PREFS.parent.mkdir(parents=True, exist_ok=True)
+        WINDOW_PREFS.write_text(json.dumps(prefs), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clamp_opacity(value) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(MIN_OPACITY, min(1.0, v))
+
+
+def _set_opacity(hwnd, opacity: float) -> bool:
+    """Aplica la opacidad a la ventana. 1.0 quita WS_EX_LAYERED por completo."""
+    if not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+    user32.SetWindowLongW.restype = ctypes.c_long
+    user32.SetLayeredWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                                  ctypes.c_ubyte, ctypes.c_uint]
+    user32.SetLayeredWindowAttributes.restype = ctypes.c_int
+    ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if opacity >= 1.0:
+        if ex & WS_EX_LAYERED:
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED)
+        return True
+    if not ex & WS_EX_LAYERED:
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
+    alpha = int(round(opacity * 255))
+    return user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA) != 0
 
 
 # ----------------------------------------------------------------------
@@ -172,19 +228,34 @@ class StealthAPI:
     """
 
     def __init__(self):
-        self.window: "webview.Window | None" = None
+        self._window: "webview.Window | None" = None  # privado: pywebview no lo expone al puente JS
         self.locked: bool = True
         self.topmost: bool = False
+        self.opacity: float = _clamp_opacity(_load_window_prefs().get("opacity", 1.0))
         self._hwnd_cache: "int | None" = None
         self._applied_once: bool = False
 
     def _hwnd(self):
         if self._hwnd_cache:
             return self._hwnd_cache
-        h = _find_hwnd(WINDOW_TITLE)
+        h = None
+        # El handle nativo identifica NUESTRA ventana; buscar por título
+        # podría devolver la de otra instancia con el mismo nombre.
+        try:
+            h = int(self._window.native.Handle.ToInt32())
+        except Exception:
+            h = None
+        if not h:
+            h = _find_hwnd(WINDOW_TITLE)
         if h:
             self._hwnd_cache = h
         return h
+
+    def apply_opacity(self, value) -> float:
+        value = _clamp_opacity(value)
+        if _set_opacity(self._hwnd(), value):
+            self.opacity = value
+        return self.opacity
 
     def apply_lock(self, locked: bool) -> bool:
         hwnd = self._hwnd()
@@ -219,10 +290,22 @@ class StealthAPI:
     def is_topmost(self) -> bool:
         return self.topmost
 
+    def set_opacity(self, value, persist=False) -> float:
+        """Opacidad de 0.3 a 1.0. Con persist=True se recuerda al reabrir."""
+        opacity = self.apply_opacity(value)
+        if persist:
+            prefs = _load_window_prefs()
+            prefs["opacity"] = opacity
+            _save_window_prefs(prefs)
+        return opacity
+
+    def get_opacity(self) -> float:
+        return self.opacity
+
     def quit_app(self):
-        if self.window is not None:
+        if self._window is not None:
             try:
-                self.window.destroy()
+                self._window.destroy()
             except Exception:
                 pass
 
@@ -262,7 +345,7 @@ def main():
         confirm_close=False,
         text_select=True,
     )
-    api.window = window
+    api._window = window
 
     # 3) Aplicar stealth UNA sola vez tras `shown`.
     fired = threading.Event()
@@ -271,6 +354,8 @@ def main():
         # Espera muy breve para que Windows asigne el HWND final.
         for delay in (0.05, 0.1, 0.2, 0.3):
             if api.apply_lock(True):
+                if api.opacity < 1.0:
+                    api.apply_opacity(api.opacity)  # transparencia guardada
                 return
             time.sleep(delay)
         # Si tras 0.65s no se pudo aplicar, no insistimos: evitamos consumir

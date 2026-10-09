@@ -405,4 +405,33 @@ body.mode-reader .reader { display: block; }
 @media (prefers-reduced-motion: reduce) {
   #overlay-sync[data-sync] { animation: none; }
 }
+
+/* === Transparencia (app nativa) === */
+#row-opacity button { flex: 0 0 auto; padding: 6px 12px; }
+#overlay-opacity { color: #9ab; font-weight: 600; }
+.preview-sample {
+  position: absolute;
+  left: 8vw; right: 8vw;
+  top: 50%;
+  transform: translateY(-50%);
+  font-weight: 500;
+  pointer-events: none;
+}
+.preview-sample p { margin: 0; }
+.preview-sample .w.read { color: #2c2c30; }
+.preview-sample .w.current { color: var(--accent); text-shadow: 0 0 24px var(--accent-glow); }
+.preview-sample .w.upcoming { color: var(--fg); }
+.preview-banner {
+  position: fixed;
+  top: 16px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 15, 18, 0.85);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: var(--fg);
+  z-index: 40;
+  pointer-events: none;
+}
 .hidden { display: none; }
