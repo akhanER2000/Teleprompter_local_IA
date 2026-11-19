@@ -76,9 +76,11 @@ def test_variable_vacia_cuenta_como_no_definida(tmp_path: Path) -> None:
     ("TP_LANGUAGE", "EN", "language", "en"),
     ("TP_INPUT_DEVICE", "3", "input_device", 3),
     ("TP_WINDOW_S", "2,5", "window_s", 2.5),
+    ("TP_WINDOW_S", "1", "window_s", 1.0),
     ("TP_STEP_MS", " 500 ", "step_ms", 500),
     ("TP_PROMPT_CONTEXT", "1", "prompt_context", True),
     ("TP_VAD_THRESHOLD", "0.35", "vad_threshold", 0.35),
+    ("TP_VAD_THRESHOLD", "0,9", "vad_threshold", 0.9),
     ("TP_DEBUG", "true", "debug", True),
     ("TP_DEBUG", "on", "debug", True),
     ("TP_FAKE_STT", "0", "fake_stt", False),
@@ -97,7 +99,8 @@ def test_valores_validos_del_entorno(no_file: Path, var: str, raw: str, field: s
     ("TP_INPUT_DEVICE", "-1"), ("TP_INPUT_DEVICE", "mic"),
     ("TP_WINDOW_S", "0.2"), ("TP_WINDOW_S", "nan"), ("TP_WINDOW_S", "inf"),
     ("TP_STEP_MS", "5"), ("TP_STEP_MS", "1e3"),
-    ("TP_PROMPT_CONTEXT", "quizas"), ("TP_VAD_THRESHOLD", "0"), ("TP_VAD_THRESHOLD", "1.5"),
+    ("TP_PROMPT_CONTEXT", "quizas"), ("TP_VAD_THRESHOLD", "0"), ("TP_VAD_THRESHOLD", "1"),
+    ("TP_VAD_THRESHOLD", "1.5"),
     ("TP_DEBUG", "2"), ("TP_LOG_LEVEL", "VERBOSE"),
     ("TP_AUDIO_FILE", "no/existe/nada.wav"),
 ])
@@ -176,6 +179,16 @@ def test_por_defecto_lee_el_entorno_del_proceso(monkeypatch: pytest.MonkeyPatch,
                                                 no_file: Path) -> None:
     monkeypatch.setenv("TP_STEP_MS", "420")
     assert load_settings(config_path=no_file).step_ms == 420
+
+
+def test_ajustes_del_bucle_de_voz(tmp_path: Path) -> None:
+    # Fase 2: ventana, paso, contexto del guion y umbral del VAD.
+    path = _write(tmp_path, {"TP_WINDOW_S": "2.5", "TP_STEP_MS": 300,
+                             "TP_PROMPT_CONTEXT": "on", "TP_VAD_THRESHOLD": 0.4})
+    s = load_settings(env={}, config_path=path)
+    assert (s.window_s, s.step_ms, s.prompt_context, s.vad_threshold) == (2.5, 300, True, 0.4)
+    s = load_settings(env={"TP_PROMPT_CONTEXT": "0", "TP_STEP_MS": "350"}, config_path=path)
+    assert (s.prompt_context, s.step_ms) == (False, 350)
 
 
 def test_rutas_del_proyecto() -> None:

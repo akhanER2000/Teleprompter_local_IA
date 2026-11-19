@@ -383,4 +383,26 @@ body.mode-reader .reader { display: block; }
 #overlay-mode[data-mode="voice_pending"] { color: var(--warn); }
 #overlay-mode[data-mode="voice"] { color: var(--accent); }
 #overlay-mode[data-mode="auto"] { color: var(--directive); }
+/* Sincronía de la voz: la búsqueda (desync) no es un error, así que se ve discreta. */
+#overlay-sync[data-sync="searching"] {
+  color: var(--warn);
+  opacity: 0.7;
+  animation: sync-pulse 1.6s ease-in-out infinite;
+}
+#overlay-sync[data-sync="resynced"] {
+  color: var(--accent);
+  animation: sync-flash 1.6s ease-out forwards;   /* igual que SYNC_FLASH_MS en app.js */
+}
+@keyframes sync-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+@keyframes sync-flash {
+  0% { opacity: 1; text-shadow: 0 0 10px var(--accent-glow); }
+  60% { opacity: 1; text-shadow: none; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #overlay-sync[data-sync] { animation: none; }
+}
 .hidden { display: none; }

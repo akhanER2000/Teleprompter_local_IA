@@ -86,7 +86,8 @@ def _int(lo: int, hi: int) -> Callable[[Any], int]:
     return parse
 
 
-def _float(lo: float, hi: float, *, open_lo: bool = False) -> Callable[[Any], float]:
+def _float(lo: float, hi: float, *, open_lo: bool = False,
+           open_hi: bool = False) -> Callable[[Any], float]:
     def parse(raw: Any) -> float:
         if isinstance(raw, bool):
             raise ValueError("se esperaba un número")
@@ -101,8 +102,8 @@ def _float(lo: float, hi: float, *, open_lo: bool = False) -> Callable[[Any], fl
             raise ValueError("se esperaba un número")
         if not math.isfinite(value):
             raise ValueError("se esperaba un número finito")
-        if value > hi or value < lo or (open_lo and value == lo):
-            interval = f"({lo} a {hi}]" if open_lo else f"[{lo} a {hi}]"
+        if value > hi or value < lo or (open_lo and value == lo) or (open_hi and value == hi):
+            interval = f"{'(' if open_lo else '['}{lo} a {hi}{')' if open_hi else ']'}"
             raise ValueError(f"fuera de rango {interval}")
         return value
     return parse
@@ -171,10 +172,12 @@ _SPECS: dict[str, tuple[str, Callable[[Any], Any]]] = {
     "compute_type": ("TP_COMPUTE", _choice(COMPUTE_TYPES)),
     "language": ("TP_LANGUAGE", _language),
     "input_device": ("TP_INPUT_DEVICE", _input_device),
+    # La ventana mínima coincide con la que el bucle de voz transcribe (1 s).
     "window_s": ("TP_WINDOW_S", _float(1.0, 30.0)),
     "step_ms": ("TP_STEP_MS", _int(20, 5000)),
     "prompt_context": ("TP_PROMPT_CONTEXT", _bool),
-    "vad_threshold": ("TP_VAD_THRESHOLD", _float(0.0, 1.0, open_lo=True)),
+    # Probabilidad de voz de Silero: con 0 todo sería voz y con 1 nada.
+    "vad_threshold": ("TP_VAD_THRESHOLD", _float(0.0, 1.0, open_lo=True, open_hi=True)),
     "debug": ("TP_DEBUG", _bool),
     "fake_stt": ("TP_FAKE_STT", _bool),
     "audio_file": ("TP_AUDIO_FILE", _audio_file),

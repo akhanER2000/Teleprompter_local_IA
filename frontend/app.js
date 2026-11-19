@@ -8,6 +8,7 @@
   const BACKOFF_MIN_MS = 500;
   const BACKOFF_MAX_MS = 8000;
   const CLOSE_REPLACED = 4000;        // el servidor cerró esta conexión por otra más nueva
+  const SYNC_FLASH_MS = 1600;         // duración del indicador "Resincronizado" del overlay
 
   /** Recorta un índice a [0, total]. */
   function clampIdx(idx, total) {
@@ -140,6 +141,7 @@
     scriptView: $("script-view"),
     overlayMode: $("overlay-mode"),
     overlayStatus: $("overlay-status"),
+    overlaySync: $("overlay-sync"),
     overlayConn: $("overlay-conn"),
     overlayModel: $("overlay-model"),
     overlayStealth: $("overlay-stealth"),
@@ -169,7 +171,9 @@
     startTimer: null,
     startSeq: null,          // seq del último start enviado
     voiceReqs: 0,            // start y pause enviados que el servidor aún no respondió
-    desync: false,
+    desync: false,           // el backend busca la posición (status: desync); no es un error
+    syncFlash: false,        // destello "Resincronizado" tras un scroll con resync: true
+    syncFlashTimer: null,
     // Épocas: seq monotónico; se ignoran los scroll con época menor que lastSentSeq
     seq: 0,
     lastSentSeq: 0,
@@ -584,12 +588,41 @@
     // antes de pausar (o de un micrófono que aún no se cerró).
     if (!echo && state.mode !== "voice") return;
     if (!echo) showStats(msg);
-    applyIndex(msg.current_idx);
-    if (msg.resync === true) {
-      state.desync = false;
-      notify("info", "Posición resincronizada con la voz.", { channel: "voice" });
+    // Una resincronización salta sin animación: la posición cambia de golpe,
+    // hacia adelante o hacia atrás, y animar ese tramo solo distrae.
+    const resync = !echo && msg.resync === true;
+    applyIndex(msg.current_idx, { instant: resync });
+    if (state.mode !== "voice") return;
+    // Cualquier scroll aplicado en voz termina la búsqueda del overlay.
+    const searching = state.desync;
+    state.desync = false;
+    if (resync) flashResync();
+    else if (searching) updateOverlay();
+  }
+
+  /** Destella "Resincronizado" en el overlay (reinicia el destello si ya estaba). */
+  function flashResync() {
+    clearTimeout(state.syncFlashTimer);
+    state.syncFlash = true;
+    state.syncFlashTimer = setTimeout(() => {
+      state.syncFlashTimer = null;
+      state.syncFlash = false;
       updateOverlay();
+    }, SYNC_FLASH_MS);
+    const el = els.overlaySync;
+    if (el.dataset.sync === "resynced") {
+      // Dos resync seguidos: quitar el estado y forzar un reflow reinicia la animación.
+      el.dataset.sync = "";
+      void el.offsetWidth;
     }
+    updateOverlay();
+  }
+
+  /** Apaga el destello sin redibujar (quien llama actualiza la UI). */
+  function clearSyncFlash() {
+    clearTimeout(state.syncFlashTimer);
+    state.syncFlashTimer = null;
+    state.syncFlash = false;
   }
 
   /** Descuenta una respuesta de voz; true si refleja la última petición (o no hay ninguna pendiente). */
@@ -635,9 +668,12 @@
         if (takeVoiceReply(true) && state.mode === "voice") setMode("idle");
         break;
       case "desync":
+        // No es un error: el backend busca la posición en el guion. Basta un
+        // indicador discreto en el overlay, sin aviso; se apaga con el próximo
+        // scroll o con el status: listening que marca el fin de la búsqueda.
         if (state.mode === "voice") {
           state.desync = true;
-          notify("warning", text || "Desincronizado: buscando la posición en el guion…", { channel: "voice", sticky: true });
+          clearSyncFlash();
         }
         break;
       case "warning":
@@ -691,7 +727,10 @@
     if (prev === "auto") stopAutoTimer();
     if (prev === "voice_pending") clearStartTimer();
     state.mode = mode;
-    if (mode !== "voice") state.desync = false;
+    if (mode !== "voice") {
+      state.desync = false;
+      clearSyncFlash();
+    }
     clearNotices("server");
     updateUI();
   }
@@ -1079,12 +1118,13 @@
   function updateOverlay() {
     const m = state.mode;
     let label = "⏸ PAUSA";
-    if (m === "voice") label = state.desync ? "🎙 VOZ · buscando…" : "🎙 VOZ";
+    if (m === "voice") label = "🎙 VOZ";
     else if (m === "voice_pending") label = "🎙 INICIANDO…";
     else if (m === "auto") label = "▶ AUTO";
     els.overlayMode.textContent = label;
     els.overlayMode.dataset.mode = m;
     els.overlayStatus.classList.toggle("on", m === "voice");
+    updateSyncIndicator();
 
     const conn = state.conn === "connecting" && state.everOpened ? CONN_LABEL.closed : CONN_LABEL[state.conn];
     setIndicator(els.overlayConn, conn[0], conn[1]);
@@ -1097,6 +1137,25 @@
     els.overlayStt.classList.toggle("hidden", auto);
     els.overlayConf.classList.toggle("hidden", auto);
     if (auto) els.overlaySpeed.textContent = `vel ${state.autoSpeed.toFixed(1)}`;
+  }
+
+  const SYNC_LABEL = {
+    searching: "Buscando posición…",
+    resynced: "Resincronizado",
+  };
+
+  /** Indicador de sincronía de la voz: búsqueda en curso o destello tras resincronizar. */
+  function updateSyncIndicator() {
+    let sync = "";
+    if (state.mode === "voice") {
+      if (state.desync) sync = "searching";
+      else if (state.syncFlash) sync = "resynced";
+    }
+    const el = els.overlaySync;
+    if ((el.dataset.sync || "") === sync) return;   // sin cambios: no reinicia la animación
+    el.dataset.sync = sync;
+    el.textContent = sync ? SYNC_LABEL[sync] : "";
+    el.classList.toggle("hidden", !sync);
   }
 
   function showStats(msg) {

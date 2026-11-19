@@ -1,8 +1,9 @@
-"""STT y audio falsos para pruebas y desarrollo sin GPU ni micrófono (`TP_FAKE_STT=1`).
+"""STT, VAD y audio falsos para pruebas y desarrollo sin GPU ni micrófono (`TP_FAKE_STT=1`).
 
 Implementan las interfaces de `tools/stt_engine.py` (docs/diseno_v2.md,
-sección 9) y de `tools/audio_capture.py` (sección 8) sin importar
-faster-whisper ni sounddevice. Ninguna espera dura más de `MAX_WAIT_S`.
+sección 9), de `tools/vad_gate.py` y de `tools/audio_capture.py` (sección 8)
+sin importar faster-whisper, onnxruntime ni sounddevice. Ninguna espera dura
+más de `MAX_WAIT_S`.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import math
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -20,6 +22,7 @@ log = logging.getLogger("teleprompter.fakes")
 SAMPLE_RATE = 16000
 LEVEL_FLOOR_DB = -120.0
 MAX_WAIT_S = 5.0
+VOICE_GATE_DB = -50.0  # FakeVadGate por defecto: "hay voz" si la cola supera este nivel
 
 
 # ---------------------------------------------------------------- STT
@@ -55,6 +58,8 @@ class FakeSTTEngine:
     - `transcribe()` saca la siguiente transcripción de una cola segura entre
       hilos y devuelve "" si está vacía. Tras `hold()`, las llamadas que sacan
       una transcripción no vacía esperan a `release()` (inferencia lenta).
+    - Acepta `initial_prompt` como el motor real y lo anota en `last_prompt`
+      y en `prompts` (uno por llamada).
     """
 
     def __init__(self, model_size: str = "fake", device: str = "cpu",
@@ -79,8 +84,9 @@ class FakeSTTEngine:
         self.load_calls = 0
         self.calls = 0
         self.last_prompt: str | None = None
+        self.prompts: list[str | None] = []
         self.last_samples = 0
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[str | Transcription] = queue.Queue()
         self._gate = threading.Event()
         self._gate.set()  # abierto: no bloquea
         self._cond = threading.Condition()
@@ -101,10 +107,15 @@ class FakeSTTEngine:
 
     # ------------------------------------------------------------ control
 
-    def push(self, *texts: str) -> None:
-        """Programa transcripciones; cada llamada a transcribe() saca una."""
-        for text in texts:
-            self._queue.put(text)
+    def push(self, *items: str | Transcription) -> None:
+        """Programa transcripciones; cada llamada a transcribe() saca una.
+
+        Un texto produce un único segmento con métricas de habla clara; una
+        `Transcription` se devuelve con sus segmentos (por ejemplo, con un
+        `no_speech_prob` alto para probar el filtro de alucinaciones).
+        """
+        for item in items:
+            self._queue.put(item)
 
     def pending(self) -> int:
         return self._queue.qsize()
@@ -135,12 +146,18 @@ class FakeSTTEngine:
             raise RuntimeError("Modelo no cargado")
         t0 = time.perf_counter()
         try:
-            text = self._queue.get_nowait()
+            item = self._queue.get_nowait()
         except queue.Empty:
-            text = ""
+            item = ""
+        if isinstance(item, Transcription):
+            programmed: Transcription | None = item
+            text = item.text
+        else:
+            programmed, text = None, item
         with self._cond:
             self.calls += 1
             self.last_prompt = initial_prompt
+            self.prompts.append(initial_prompt)
             self.last_samples = int(np.asarray(samples).size)
             self._cond.notify_all()
         if text and not self._gate.is_set():
@@ -159,7 +176,56 @@ class FakeSTTEngine:
         if self.transcribe_error is not None:
             raise self.transcribe_error
         stt_ms = int((time.perf_counter() - t0) * 1000)
+        if programmed is not None:
+            return Transcription(text=programmed.text, segments=list(programmed.segments),
+                                 stt_ms=stt_ms)
         return Transcription(text=text, segments=[SegmentInfo(text)] if text else [], stt_ms=stt_ms)
+
+
+# ---------------------------------------------------------------- VAD
+
+class FakeVadGate:
+    """VAD falso con la interfaz de `tools.vad_gate.VadGate`.
+
+    `voiced` decide `has_speech`: True o False fijos, o una función que
+    recibe la cola de la ventana (los últimos `tail_s` segundos). Con None
+    (por defecto) hay voz si el nivel RMS de esa cola supera
+    `VOICE_GATE_DB`: el tono de `FakeAudioSource` es voz y el silencio no.
+    Se puede cambiar `voiced` en cualquier momento. Anota cada llamada.
+    """
+
+    def __init__(self, voiced: bool | Callable[[np.ndarray], bool] | None = None, *,
+                 threshold: float = 0.5, sample_rate: int = SAMPLE_RATE) -> None:
+        self.voiced = voiced
+        self.threshold = threshold
+        self.sample_rate = sample_rate
+        self.calls = 0
+        self.last_tail_s: float | None = None
+        self.last_samples = 0
+        self.threads: set[str] = set()  # hilos desde los que se llamó
+        self._lock = threading.Lock()
+
+    def _decide(self, tail: np.ndarray) -> bool:
+        voiced = self.voiced
+        if voiced is None:
+            return tail.size > 0 and _rms_dbfs(tail) > VOICE_GATE_DB
+        if callable(voiced):
+            return bool(voiced(tail))
+        return bool(voiced)
+
+    def has_speech(self, samples: np.ndarray, tail_s: float = 1.0) -> bool:
+        audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+        with self._lock:
+            self.calls += 1
+            self.last_tail_s = tail_s
+            self.last_samples = int(audio.size)
+            self.threads.add(threading.current_thread().name)
+        n = max(1, int(round(tail_s * self.sample_rate)))
+        return self._decide(audio[-n:])
+
+    def speech_ratio(self, samples: np.ndarray) -> float:
+        audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+        return 1.0 if audio.size and self._decide(audio) else 0.0
 
 
 # ---------------------------------------------------------------- audio

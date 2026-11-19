@@ -1,8 +1,10 @@
 """Protocolo WebSocket v2 de punta a punta con STT y audio falsos.
 
 Usa `TestClient` de Starlette con `create_app(Settings(...))` y fábricas que
-inyectan `FakeSTTEngine` y `FakeAudioSource`: sin GPU, micrófono ni red.
-Ninguna espera supera los 5 s.
+inyectan `FakeSTTEngine`, `FakeVadGate` y `FakeAudioSource`: sin GPU,
+micrófono ni red. Ninguna espera supera los 5 s. Con el bucle de la Fase 2,
+la primera inferencia tras cada start o reposicionamiento espera a tener
+`MIN_WINDOW_S` (1 s) de audio nuevo.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from backend import server as server_mod
 from backend import voice as voice_mod
 from backend.config import Settings
-from backend.fakes import FakeAudioSource, FakeModelError, FakeSTTEngine
+from backend.fakes import FakeAudioSource, FakeModelError, FakeSTTEngine, FakeVadGate
 from backend.protocol import (
     MAX_MESSAGE_BYTES, Hello, LoadScript, ProtocolError, SetPosition, Start, encode, level_msg,
     parse_client_message, scroll_msg, status_msg, transcript_msg,
@@ -161,11 +163,12 @@ class Ws:
 
 class Harness:
     def __init__(self, app, client: TestClient, stt: FakeSTTEngine,
-                 audio: FakeAudioSource | None) -> None:
+                 audio: FakeAudioSource | None, vad: FakeVadGate | None = None) -> None:
         self.app = app
         self.client = client
         self.stt = stt
         self.audio = audio
+        self.vad = vad
         self.session = app.state.session
 
     @contextlib.contextmanager
@@ -181,6 +184,14 @@ class Harness:
             time.sleep(0.01)
 
 
+def _wait_model_loaded(session: Session) -> None:
+    deadline = time.monotonic() + TIMEOUT
+    while session.model_state == "loading":
+        if time.monotonic() > deadline:
+            pytest.fail("Se agotó la espera: carga del modelo falso")
+        time.sleep(0.01)
+
+
 @pytest.fixture
 def make() -> Iterator[Callable[..., Harness]]:
     """Fábrica de app + TestClient con falsos; libera todo al terminar."""
@@ -189,18 +200,23 @@ def make() -> Iterator[Callable[..., Harness]]:
     stts: list[FakeSTTEngine] = []
 
     def factory(*, stt: FakeSTTEngine | None = None, audio: FakeAudioSource | None = None,
-                audio_factory: Callable | None = None, wait_model: bool = True,
+                audio_factory: Callable | None = None, vad: FakeVadGate | None = None,
+                vad_factory: Callable | None = None, wait_model: bool = True,
                 **overrides) -> Harness:
         settings = Settings(fake_stt=True, step_ms=20, **overrides)
         stt = stt if stt is not None else FakeSTTEngine(device=settings.device)
         if audio_factory is None:
             audio = audio if audio is not None else FakeAudioSource(block_s=0.02)
             audio_factory = lambda s: audio  # noqa: E731
+        if vad_factory is None:
+            vad = vad if vad is not None else FakeVadGate()
+            vad_factory = lambda s: vad  # noqa: E731
         stts.append(stt)
         if stt.load_gate is not None:
             gates.append(stt.load_gate)
-        app = create_app(settings, stt_factory=lambda s: stt, audio_factory=audio_factory)
-        h = Harness(app, stack.enter_context(TestClient(app)), stt, audio)
+        app = create_app(settings, stt_factory=lambda s: stt, audio_factory=audio_factory,
+                         vad_factory=vad_factory)
+        h = Harness(app, stack.enter_context(TestClient(app)), stt, audio, vad)
         if wait_model:
             h.wait(lambda: h.session.model_state != "loading", "carga del modelo falso")
         return h
@@ -267,37 +283,46 @@ def test_start_con_idx_y_la_voz_sigue_desde_ahi(make) -> None:
         assert scroll["matched_word"] in WORDS[120:124]
         assert scroll["stt_ms"] >= 0 and scroll["lag_ms"] >= 0
         assert h.session.matcher.current_idx == scroll["current_idx"]
-        # Fase 1: bloques nuevos de al menos 500 ms (MIN_CHUNK_S), nunca ventanas solapadas.
-        assert h.stt.last_samples >= int(voice_mod.MIN_CHUNK_S * 16000)
+        # Fase 2: ventana de al menos 1 s (MIN_WINDOW_S) y como mucho window_s (3 s).
+        assert int(voice_mod.MIN_WINDOW_S * 16000) <= h.stt.last_samples <= 3 * 16000
+        assert set(h.stt.prompts) == {None}  # sin TP_PROMPT_CONTEXT no hay initial_prompt
 
 
-def test_silencio_no_se_transcribe(make) -> None:
-    h = make(audio=FakeAudioSource(amplitude=0.0, block_s=0.02))
+@pytest.mark.parametrize("case", ["silencio", "vad_sin_voz"])
+def test_sin_voz_no_se_transcribe(make, case: str) -> None:
+    if case == "silencio":  # el VAD falso por defecto no ve voz en el silencio
+        h = make(audio=FakeAudioSource(amplitude=0.0, block_s=0.02))
+    else:  # hay señal, pero el VAD dice que no es voz
+        h = make(vad=FakeVadGate(voiced=False))
     with h.connect() as c:
         c.hello()
         c.load(seq=1)
+        warmup = h.vad.calls  # la carga del modelo ya consultó el VAD una vez
+        assert warmup == 1
         c.start(idx=0, seq=2)
-        time.sleep(voice_mod.MIN_CHUNK_S * 2.5)
-        assert h.audio.total_samples > 0
-        assert h.stt.calls == 0  # umbral RMS heredado (0.005)
+        h.wait(lambda: h.vad.calls >= warmup + 3, "el bucle consultó el VAD")
+        assert h.vad.last_samples >= 16000 and h.vad.last_tail_s == 1.0
+        assert h.stt.calls == 0
         level = c.ws._send_queue.get(timeout=TIMEOUT)  # el medidor sí informa
-        assert json.loads(level["text"]) == {"type": "level", "rms_db": -120.0}
+        rms_db = json.loads(level["text"])["rms_db"]
+        assert rms_db == -120.0 if case == "silencio" else rms_db > -40.0
 
 
 def test_fabricas_por_defecto_con_fake_stt() -> None:
     app = create_app(Settings(fake_stt=True, step_ms=20))
-    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-        c = Ws(ws)
-        deadline = time.monotonic() + TIMEOUT
-        while app.state.session.model_state == "loading" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert c.hello()["model"] == "ready"
-        c.load(seq=1)
-        assert c.start(idx=3, seq=2)["current_idx"] == 3
-        assert isinstance(app.state.session.voice._audio, FakeAudioSource)
-        assert isinstance(app.state.session.stt, FakeSTTEngine)
-        c.send(action="pause")
-        c.wait_type("status", state="paused")
+    with TestClient(app) as client:
+        # Se conecta con el modelo ya listo: si no, sus avisos llegarían antes del state.
+        _wait_model_loaded(app.state.session)
+        with client.websocket_connect("/ws") as ws:
+            c = Ws(ws)
+            assert c.hello()["model"] == "ready"
+            c.load(seq=1)
+            assert c.start(idx=3, seq=2)["current_idx"] == 3
+            assert isinstance(app.state.session.voice._audio, FakeAudioSource)
+            assert isinstance(app.state.session.stt, FakeSTTEngine)
+            assert isinstance(app.state.session.vad, FakeVadGate)
+            c.send(action="pause")
+            c.wait_type("status", state="paused")
 
 
 def test_start_escuchando_solo_reposiciona(make) -> None:
@@ -340,8 +365,8 @@ def test_nunca_dos_inferencias_a_la_vez(make, monkeypatch: pytest.MonkeyPatch) -
     attempts: list[object] = []  # resultado de cada intento de inferencia que terminó
     real_infer = voice_mod.VoiceLoop._infer
 
-    def spy(self, samples):
-        result = real_infer(self, samples)
+    def spy(self, *args):
+        result = real_infer(self, *args)
         attempts.append(result)
         return result
 
@@ -359,7 +384,7 @@ def test_nunca_dos_inferencias_a_la_vez(make, monkeypatch: pytest.MonkeyPatch) -
         c.send(action="pause")
         c.wait_type("status", state="paused")
         c.start(idx=0, seq=3)  # bucle nuevo con la inferencia anterior todavía en curso
-        # El bucle nuevo solo intenta transcribir cuando junta MIN_CHUNK_S de
+        # El bucle nuevo solo intenta transcribir cuando junta MIN_WINDOW_S de
         # audio nuevo: se espera a ese intento (no basta con dormir un rato).
         h.wait(lambda: len(attempts) > done_before, "intento de inferencia del bucle nuevo")
         assert attempts[done_before] is None, "el bucle nuevo no vio el motor ocupado"
@@ -765,29 +790,29 @@ def test_audio_file_reanuda_donde_quedo_tras_pausa(tmp_path) -> None:
     # principio del WAV (el matcher conserva su posición).
     wav = _write_tone_wav(tmp_path / "demo.wav", 10.0)
     stt = FakeSTTEngine()
-    app = create_app(Settings(audio_file=wav, step_ms=20), stt_factory=lambda s: stt)
+    app = create_app(Settings(audio_file=wav, step_ms=20), stt_factory=lambda s: stt,
+                     vad_factory=lambda s: FakeVadGate())
     session = app.state.session
-    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-        c = Ws(ws)
-        deadline = time.monotonic() + TIMEOUT
-        while session.model_state == "loading" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        c.hello()
-        c.load(seq=1)
-        c.start(idx=0, seq=2)
-        src = session.voice.audio
-        deadline = time.monotonic() + TIMEOUT
-        while src.position_s < 0.5 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        c.send(action="pause")
-        c.wait_type("status", state="paused")
-        paused_at = src.position_s
-        assert paused_at >= 0.5
-        c.start(idx=0, seq=3)
-        assert session.voice.audio is src
-        assert src.position_s >= paused_at  # sigue, no vuelve a 0
-        c.send(action="pause")
-        c.wait_type("status", state="paused")
+    with TestClient(app) as client:
+        _wait_model_loaded(session)
+        with client.websocket_connect("/ws") as ws:
+            c = Ws(ws)
+            c.hello()
+            c.load(seq=1)
+            c.start(idx=0, seq=2)
+            src = session.voice.audio
+            deadline = time.monotonic() + TIMEOUT
+            while src.position_s < 0.5 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            c.send(action="pause")
+            c.wait_type("status", state="paused")
+            paused_at = src.position_s
+            assert paused_at >= 0.5
+            c.start(idx=0, seq=3)
+            assert session.voice.audio is src
+            assert src.position_s >= paused_at  # sigue, no vuelve a 0
+            c.send(action="pause")
+            c.wait_type("status", state="paused")
 
 
 def test_model_not_ready_mientras_carga(make) -> None:
@@ -844,6 +869,98 @@ def test_fallback_a_cpu_avisa_cuda_fallback(make) -> None:
         assert (warn["state"], warn["code"]) == ("warning", "CUDA_FALLBACK")
         state = c.next()
         assert (state["model"], state["device"]) == ("ready", "cpu")
+
+
+def test_vad_uno_por_sesion_y_cargado_con_el_modelo(make) -> None:
+    created: list[FakeVadGate] = []
+
+    def vad_factory(settings: Settings) -> FakeVadGate:
+        created.append(FakeVadGate(threshold=settings.vad_threshold))
+        return created[-1]
+
+    h = make(vad_factory=vad_factory, vad_threshold=0.35)
+    # Se crea y se precalienta en el hilo de carga, antes de quedar listo:
+    # el primer ciclo no paga la carga de Silero.
+    assert len(created) == 1
+    vad = created[0]
+    assert vad.calls == 1 and vad.threads == {"stt-load"} and vad.threshold == 0.35
+    assert h.session.vad is vad
+    with h.connect() as c:
+        c.hello()
+        c.load(seq=1)
+        c.start(idx=0, seq=2)
+        c.send(action="pause")
+        c.wait_type("status", state="paused")
+        c.start(idx=0, seq=3)
+        h.wait(lambda: vad.calls > 1, "el bucle consultó el VAD de la sesión")
+    assert len(created) == 1
+
+
+def test_vad_que_no_carga_informa_model_error(make) -> None:
+    def broken_vad(settings: Settings) -> FakeVadGate:
+        raise RuntimeError("onnxruntime no disponible")
+
+    h = make(vad_factory=broken_vad)
+    assert h.session.model_state == "error"
+    with h.connect() as c:
+        assert c.hello()["model"] == "error"
+        err = c.wait_type("status", state="error")
+        assert err["code"] == "MODEL_ERROR"
+        assert "detector de voz" in err["message"] and "onnxruntime" in err["message"]
+        c.load(seq=1)
+        c.send(action="start", idx=0, seq=2)
+        assert c.next()["code"] == "MODEL_NOT_READY"
+
+
+def test_prompt_context_pasa_el_guion_anterior(make) -> None:
+    h = make(prompt_context=True)
+    with h.connect() as c:
+        c.hello()
+        c.load(seq=1)
+        c.start(idx=120, seq=2)
+        h.stt.push(" ".join(WORDS[120:124]))
+        scroll = c.wait_type("scroll")
+        assert scroll["current_idx"] > 120
+    # Las 25 palabras del guion anteriores a la posición, como contexto previo.
+    assert h.stt.prompts[0] == " ".join(WORDS[95:120])
+
+
+def test_desync_y_vuelta_a_listening(make) -> None:
+    h = make()
+    with h.connect() as c:
+        c.hello()
+        c.load(seq=1)
+        c.start(idx=10, seq=2)
+        # El orador dice cosas que no están en el guion: tras varios ciclos el
+        # matcher se declara desincronizado y el cliente lo ve.
+        h.stt.push(*["lorem ipsum dolor sit amet consectetur"] * 10)
+        desync, skipped = c.wait_for(lambda m: m["type"] == "status")
+        assert (desync["state"], desync["code"]) == ("desync", None)
+        assert not [m for m in skipped if m["type"] == "scroll"]
+        assert h.session.matcher.current_idx == 10
+        h.wait(lambda: h.stt.pending() == 0, "transcripciones consumidas")
+        # Lee un tramo más adelante: resincroniza ahí y vuelve a listening.
+        h.stt.push(" ".join(WORDS[60:68]))
+        listening, before = c.wait_for(lambda m: m["type"] == "status")
+        assert listening["state"] == "listening"
+        scrolls = [m for m in before if m["type"] == "scroll"]
+        assert scrolls and scrolls[-1]["resync"] is True
+        assert 60 < scrolls[-1]["current_idx"] <= 68
+
+
+def test_set_position_saca_de_desync(make) -> None:
+    h = make()
+    with h.connect() as c:
+        c.hello()
+        c.load(seq=1)
+        c.start(idx=10, seq=2)
+        h.stt.push(*["lorem ipsum dolor sit amet consectetur"] * 10)
+        c.wait_type("status", state="desync")
+        c.send(action="set_position", idx=50, seq=3)
+        listening, _ = c.wait_for(lambda m: m["type"] == "status")
+        assert listening["state"] == "listening"
+        echo = c.wait_type("scroll")
+        assert (echo["current_idx"], echo["epoch"]) == (50, 3)
 
 
 def test_load_script_mientras_escucha_pausa_primero(make) -> None:

@@ -1,10 +1,10 @@
 """Servidor FastAPI: sesión persistente, conexión única con reemplazo y cola de salida.
 
 Protocolo WebSocket v2 (docs/diseno_v2.md, sección 6). El puerto abre de
-inmediato: el modelo STT se carga en un hilo y su estado llega al cliente
-activo como `status` + `state`. `create_app(settings)` es la fábrica (las
-pruebas inyectan STT y audio falsos); `app` es la instancia que importan
-uvicorn y launch.py.
+inmediato: el modelo STT y el VAD se cargan en un hilo y su estado llega al
+cliente activo como `status` + `state`. `create_app(settings)` es la fábrica
+(las pruebas inyectan STT, VAD y audio falsos); `app` es la instancia que
+importan uvicorn y launch.py.
 """
 from __future__ import annotations
 
@@ -19,17 +19,18 @@ from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any
 
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import FRONTEND_DIR, Settings, load_settings
-from backend.fakes import FakeAudioSource, FakeSTTEngine
+from backend.fakes import FakeAudioSource, FakeSTTEngine, FakeVadGate
 from backend.protocol import (
     Hello, LoadScript, Pause, ProtocolError, SetPosition, Start, echo_scroll_msg, encode,
     parse_client_message, script_loaded_msg, state_msg, status_msg,
 )
-from backend.voice import VoiceLoop
+from backend.voice import LISTENING_MESSAGE, SAMPLE_RATE, VAD_TAIL_S, VoiceLoop
 from tools.script_matcher import ScriptMatcher
 from tools.script_parser import ParsedScript, parse_script
 
@@ -42,6 +43,7 @@ BG_TIMEOUT_S = 5.0
 
 SttFactory = Callable[[Settings], Any]
 AudioFactory = Callable[[Settings], Any]
+VadFactory = Callable[[Settings], Any]
 
 
 def default_stt_factory(settings: Settings) -> Any:
@@ -53,6 +55,26 @@ def default_stt_factory(settings: Settings) -> Any:
 
     return STTEngine(model_size=settings.model_size, device=settings.device,
                      compute_type=settings.compute_type, language=settings.language)
+
+
+def default_vad_factory(settings: Settings) -> Any:
+    """Detector de voz (Silero) según la configuración. Se llama en el hilo de carga."""
+    if settings.fake_stt:
+        return FakeVadGate(threshold=settings.vad_threshold)
+    from tools.vad_gate import VadGate  # importa faster-whisper y onnxruntime: solo aquí
+
+    return VadGate(threshold=settings.vad_threshold)
+
+
+def warm_up_vad(vad: Any) -> None:
+    """Fuerza la carga perezosa de Silero con 1 s de silencio (el primer ciclo no espera)."""
+    vad.has_speech(np.zeros(int(VAD_TAIL_S * SAMPLE_RATE), dtype=np.float32), tail_s=VAD_TAIL_S)
+
+
+def build_script(text: str) -> tuple[ParsedScript, ScriptMatcher]:
+    """Parsea el guion y prepara su matcher (en un hilo: un guion enorme tarda)."""
+    parsed = parse_script(text)
+    return parsed, ScriptMatcher(parsed.tokens)
 
 
 def default_audio_factory(settings: Settings) -> Any:
@@ -206,11 +228,13 @@ class Session:
     """Estado que sobrevive a las reconexiones: guion, posición, época, modelo y escucha."""
 
     def __init__(self, settings: Settings, stt_factory: SttFactory,
-                 audio_factory: AudioFactory) -> None:
+                 audio_factory: AudioFactory, vad_factory: VadFactory) -> None:
         self.settings = settings
         self._stt_factory = stt_factory
         self._audio_factory = audio_factory
+        self._vad_factory = vad_factory
         self.stt: Any = None
+        self.vad: Any = None   # VadGate: uno por sesión, cargado junto con el modelo
         self.model_state = "loading"
         self.model_code: str | None = None
         self.model_message = f"Cargando el modelo {settings.model_size}…"
@@ -290,7 +314,17 @@ class Session:
             self._call_in_loop(self._on_model_failed, code, message)
             return
         log.info("Modelo cargado en %.1f s.", time.monotonic() - t0)
-        self._call_in_loop(self._on_model_ready, engine)
+        t1 = time.monotonic()
+        try:
+            vad = self._vad_factory(s)
+            warm_up_vad(vad)
+        except Exception as exc:
+            log.exception("No se pudo cargar el detector de voz (Silero VAD).")
+            self._call_in_loop(self._on_model_failed, "MODEL_ERROR",
+                               f"No se pudo cargar el detector de voz (Silero VAD): {exc}")
+            return
+        log.info("Detector de voz listo en %.0f ms.", (time.monotonic() - t1) * 1000)
+        self._call_in_loop(self._on_model_ready, engine, vad)
 
     def _call_in_loop(self, fn: Callable[..., None], *args: Any) -> None:
         try:
@@ -299,10 +333,11 @@ class Session:
         except RuntimeError:  # el loop ya se cerró (apagado durante la carga)
             log.debug("Loop cerrado: se ignora el resultado de la carga del modelo.")
 
-    def _on_model_ready(self, engine: Any) -> None:
+    def _on_model_ready(self, engine: Any, vad: Any) -> None:
         if self._closed:
             return
         self.stt = engine
+        self.vad = vad
         self.model_state, self.model_code = "ready", None
         self.device_in_use = getattr(engine, "device_in_use", None) or self.settings.device
         self.cuda_fallback = self.settings.device == "cuda" and self.device_in_use == "cpu"
@@ -410,7 +445,7 @@ class Session:
                 return
             conn.send(status_msg("paused", "Escucha pausada para cargar el guion."))
         try:
-            parsed = await asyncio.to_thread(parse_script, msg.text)
+            parsed, matcher = await asyncio.to_thread(build_script, msg.text)
         except ValueError as exc:
             if self._active(conn):
                 conn.send(status_msg("error", f"No se pudo cargar el guion: {exc}", "BAD_REQUEST"))
@@ -418,7 +453,7 @@ class Session:
         if not self._active(conn):
             return
         self.script = parsed
-        self.matcher = ScriptMatcher(parsed.tokens)
+        self.matcher = matcher
         self._reposition(msg.seq)
         log.info("Guion cargado: %d palabras.", parsed.total_tokens)
         conn.send(self.script_loaded())
@@ -429,7 +464,7 @@ class Session:
         if self.script is None:
             self._reject_start(conn, "NO_SCRIPT", "Carga un guion antes de iniciar Manos libres.")
             return
-        if self.model_state != "ready" or self.stt is None:
+        if self.model_state != "ready" or self.stt is None or self.vad is None:
             if self.model_state == "loading":
                 text = "El modelo de voz todavía se está cargando."
             else:
@@ -449,7 +484,7 @@ class Session:
                         return
         idx = self.matcher.current_idx if msg.idx is None else msg.idx
         self._reposition(msg.seq, idx)
-        conn.send(status_msg("listening", "Escuchando…"))
+        conn.send(status_msg("listening", LISTENING_MESSAGE))
         conn.send(echo_scroll_msg(self.matcher.current_idx, self.epoch))
 
     async def _open_voice(self, conn: Connection) -> bool:
@@ -462,7 +497,7 @@ class Session:
         try:
             if self._audio is None:
                 self._audio = await asyncio.to_thread(self._audio_factory, self.settings)
-            voice = VoiceLoop(self, self._audio, self.stt, self.settings,
+            voice = VoiceLoop(self, self._audio, self.stt, self.settings, vad=self.vad,
                               infer_lock=self._infer_lock)
             await voice.start()
         except asyncio.CancelledError:
@@ -508,7 +543,7 @@ class Session:
             self.epoch = seq
         self.generation += 1
         if self.voice is not None:
-            self.voice.discard_audio()
+            self.voice.reposition()
 
     # ------------------------------------------------------------ escucha
 
@@ -583,8 +618,9 @@ class Session:
 
 def create_app(settings: Settings | None = None, *,
                stt_factory: SttFactory | None = None,
-               audio_factory: AudioFactory | None = None) -> FastAPI:
-    """Crea la app. Las fábricas permiten inyectar STT y audio (pruebas)."""
+               audio_factory: AudioFactory | None = None,
+               vad_factory: VadFactory | None = None) -> FastAPI:
+    """Crea la app. Las fábricas permiten inyectar STT, audio y VAD (pruebas)."""
     # No hace nada si el lanzador ya configuró el logging raíz (launch.py).
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -593,7 +629,8 @@ def create_app(settings: Settings | None = None, *,
     logging.getLogger("teleprompter").setLevel(settings.log_level)
     logging.getLogger("faster_whisper").setLevel(logging.WARNING)  # una línea INFO por inferencia
     session = Session(settings, stt_factory or default_stt_factory,
-                      audio_factory or default_audio_factory)
+                      audio_factory or default_audio_factory,
+                      vad_factory or default_vad_factory)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
