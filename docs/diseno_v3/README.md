@@ -60,3 +60,5 @@ set TP_FAKE_STT=1 & set TP_PORT=8779 & .venv312\Scripts\python.exe -m uvicorn ba
 ```
 
 Exit 1 si `tema.css` no responde 200, no carga o no tiene reglas, si hay errores de consola o excepciones, o si la página pide algo fuera de `127.0.0.1` (salvo Google Fonts del `index.html` actual, que V0 ya marcó y la prueba bloquea). Si `index.html` aún no enlaza el tema, lo inyecta y lo dice; si la lógica aún no escribe los `data-*`, los pone con los valores del diseño y lo dice. Se vio en rojo: con una imagen inexistente en el tema, exit 1.
+
+Última corrida (19-11-2026, con el `index.html` de VA que ya enlaza el tema y escribe los `data-*`): exit 0, 104 reglas, sin errores, sin peticiones fuera de `127.0.0.1`, sin inyectar nada. La captura «sin tema» desactiva esa hoja para comparar.

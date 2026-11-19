@@ -48,6 +48,11 @@
   --tp-lectura-marca: var(--tp-oro);           /* subrayado de la palabra actual */
   --tp-banda-opaca: 26 27 32;                  /* #1A1B20, con el fondo al 100 % */
   --tp-banda-sobre: rgb(8 9 10 / 0.7);         /* sobre una presentación */
+  /* Banda: con el fondo al 100 %, franja apenas más clara; con el fondo transparente, oscura y translúcida.
+     La mezcla sigue a --tp-fondo-alfa (styles.css la lee como fondo de .banda-lectura). */
+  --tp-banda:
+    linear-gradient(rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1)), rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1))),
+    var(--tp-banda-sobre);
   /* Halo: un contorno duro de 2 px y dos sombras suaves, sin desplazamiento. */
   --tp-halo: 0 0 1px #000, 0 0 2px #000, 0 0 3px #000, 0 0 5px rgb(0 0 0 / 0.85), 0 0 14px rgb(0 0 0 / 0.5);
 
@@ -131,12 +136,9 @@ body[data-halo="on"] .script-view { text-shadow: var(--tp-halo); }
 .script-view .directive.read { color: var(--tp-oro-oscuro); border-left-color: var(--tp-oro-oscuro); opacity: 1; }
 .script-view .directive.current { background: none; box-shadow: none; opacity: 1; }
 
-/* Banda: con el fondo al 100 % es una franja apenas más clara con filete de oro;
-   con el fondo transparente es oscura y translúcida. La mezcla sigue a --tp-fondo-alfa. */
+/* Banda: --tp-banda, y el filete de oro solo con fondo opaco. */
 .banda-lectura {
-  background:
-    linear-gradient(rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1)), rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1))),
-    var(--tp-banda-sobre);
+  background: var(--tp-banda);
   border-radius: 16px;
   box-shadow: inset 4px 0 0 rgb(217 176 76 / var(--tp-fondo-alfa, 1));
 }

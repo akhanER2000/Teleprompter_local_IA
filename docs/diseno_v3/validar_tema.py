@@ -3,7 +3,8 @@
     set TP_FAKE_STT=1 & set TP_PORT=8779 & .venv312\\Scripts\\python.exe -m uvicorn backend.server:app --port 8779
     .venv312\\Scripts\\python.exe -I docs\\diseno_v3\\validar_tema.py 8779 docs\\diseno_v3\\capturas
 
-Para cada tamaño (1600x900 y 400x700) captura la configuración y la lectura dos veces: sin el tema y con él.
+Para cada tamaño (1600x900 y 400x700) captura la configuración y la lectura dos veces: sin el tema (si index.html
+ya lo enlaza, se desactiva esa hoja) y con él.
 Si `index.html` aún no enlaza `/static/tema.css`, lo inyecta por CDP y lo dice. Si la lógica aún no escribe los
 atributos `data-*` del contrato (CLASES.md), los pone con los valores por defecto del diseño y lo dice.
 
@@ -90,6 +91,10 @@ async def main():
                     await asyncio.sleep(1.5)
                     etiq = f"{'tema' if con_tema else 'actual'}_{w}x{h}"
                     pant = {"pantalla": etiq}
+                    if not con_tema:   # referencia: la misma página sin el tema (si index.html ya lo enlaza)
+                        pant["tema_desactivado"] = await ev(
+                            "(() => { const l = document.querySelector('link[href*=\"tema.css\"]');"
+                            " if (l) l.disabled = true; return !!l; })()")
                     if con_tema:
                         pant["carga"] = await ev(INYECTAR)
                         pant["atributos_puestos_por_la_prueba"] = await ev(ATRIBUTOS)
