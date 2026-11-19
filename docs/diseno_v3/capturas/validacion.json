@@ -1,0 +1,114 @@
+{
+ "tema_css_http": 200,
+ "pantallas": [
+  {
+   "pantalla": "actual_1600x900",
+   "medidas": {
+    "fuente": "Inter, \"Segoe UI\", system-ui, sans-serif",
+    "peso": "500",
+    "color": "rgb(245, 245, 245)",
+    "fondo_lectura": "rgb(5, 5, 5)",
+    "subrayado": "rgb(0, 224, 164)",
+    "fuentes_externas": [
+     "https://fonts.googleapis.com/",
+     "https://fonts.gstatic.com/",
+     "https://fonts.googleapis.com/css2?family=Inter:wgh"
+    ]
+   },
+   "errores_log": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ],
+   "excepciones": [],
+   "consola_error": [],
+   "peticiones_fuera": [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
+   ]
+  },
+  {
+   "pantalla": "tema_1600x900",
+   "carga": {
+    "inyectado": true,
+    "reglas": 104
+   },
+   "atributos_puestos_por_la_prueba": [
+    "modo",
+    "marcha",
+    "banda",
+    "halo",
+    "texto"
+   ],
+   "medidas": {
+    "fuente": "\"Segoe UI\", \"Segoe UI Variable Display\", system-ui, sans-serif",
+    "peso": "600",
+    "color": "rgb(243, 238, 226)",
+    "fondo_lectura": "rgb(11, 12, 14)",
+    "subrayado": "rgb(217, 176, 76)",
+    "fuentes_externas": [
+     "https://fonts.googleapis.com/",
+     "https://fonts.gstatic.com/",
+     "https://fonts.googleapis.com/css2?family=Inter:wgh"
+    ]
+   },
+   "errores_log": [],
+   "excepciones": [],
+   "consola_error": [],
+   "peticiones_fuera": [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
+   ]
+  },
+  {
+   "pantalla": "actual_400x700",
+   "medidas": {
+    "fuente": "Inter, \"Segoe UI\", system-ui, sans-serif",
+    "peso": "500",
+    "color": "rgb(245, 245, 245)",
+    "fondo_lectura": "rgb(5, 5, 5)",
+    "subrayado": "rgb(0, 224, 164)",
+    "fuentes_externas": [
+     "https://fonts.googleapis.com/",
+     "https://fonts.gstatic.com/",
+     "https://fonts.googleapis.com/css2?family=Inter:wgh"
+    ]
+   },
+   "errores_log": [],
+   "excepciones": [],
+   "consola_error": [],
+   "peticiones_fuera": [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
+   ]
+  },
+  {
+   "pantalla": "tema_400x700",
+   "carga": {
+    "inyectado": true,
+    "reglas": 104
+   },
+   "atributos_puestos_por_la_prueba": [
+    "modo",
+    "marcha",
+    "banda",
+    "halo",
+    "texto"
+   ],
+   "medidas": {
+    "fuente": "\"Segoe UI\", \"Segoe UI Variable Display\", system-ui, sans-serif",
+    "peso": "600",
+    "color": "rgb(243, 238, 226)",
+    "fondo_lectura": "rgb(11, 12, 14)",
+    "subrayado": "rgb(217, 176, 76)",
+    "fuentes_externas": [
+     "https://fonts.googleapis.com/",
+     "https://fonts.gstatic.com/",
+     "https://fonts.googleapis.com/css2?family=Inter:wgh"
+    ]
+   },
+   "errores_log": [],
+   "excepciones": [],
+   "consola_error": [],
+   "peticiones_fuera": [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
+   ]
+  }
+ ],
+ "fallos": []
+}

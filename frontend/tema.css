@@ -1,0 +1,426 @@
+/* Tema v3 · obsidiana y oro (hito 84, T5).
+ *
+ * Se carga DESPUÉS de styles.css y solo pone piel: colores, tipografía, bordes, sombras, banda y halo.
+ * No posiciona ni oculta nada; la estructura y los tamaños que dependen de la ventana son de styles.css.
+ * Diseño de referencia: docs/diseno_v3/ (diseno_v3.figcraft y png/). Contrato de nombres: frontend/CLASES.md
+ * (propuesta inicial en docs/diseno_v3/CLASES_PROPUESTAS.md).
+ *
+ * 100 % local: todas las fuentes son de Windows y se piden por nombre; ninguna URL.
+ *
+ * Lo que escribe la lógica y este archivo solo lee:
+ *   body[data-modo="manual|asistido|voz"], body[data-marcha="corriendo|pausa|espera|cuenta"],
+ *   body[data-banda="on|off"], body[data-halo="on|off"], body[data-texto="blanco|marfil|oro"],
+ *   --tp-fondo-alfa (0..1, solo el fondo; el texto va siempre al 100 %), --tp-progreso (0..1).
+ */
+
+:root {
+  /* Obsidiana y oro: los mismos valores que la colección «Galleon» de los Stream Deck. */
+  --tp-obsidiana-alto: #1C1E22;
+  --tp-obsidiana-bajo: #08090A;
+  --tp-oro: #D9B04C;
+  --tp-oro-claro: #F2D88C;
+  --tp-oro-palido: #F7E8B4;
+  --tp-oro-oscuro: #9C7322;
+  --tp-grafito: #8C8778;
+
+  /* Interfaz */
+  --tp-ui-1: #ECE7DB;
+  --tp-ui-2: #A8A397;
+  --tp-ui-3: #6C6A64;
+  --tp-borde: #2E3036;
+  --tp-panel: #121317;
+  --tp-campo: #0E0F12;
+  --tp-riel: #25262B;
+  --tp-ok: #7DAD82;
+  --tp-aviso: #E0A84A;
+  --tp-error: #E06A55;
+  --tp-grad-oro: linear-gradient(180deg, var(--tp-oro-claro), var(--tp-oro));
+  --tp-grad-oro-h: linear-gradient(90deg, var(--tp-oro-claro), var(--tp-oro));
+  --tp-grad-obsidiana: linear-gradient(180deg, var(--tp-obsidiana-alto), var(--tp-obsidiana-bajo));
+
+  /* Lectura: neutra y de alto contraste. */
+  --tp-lectura-fondo-rgb: 11 12 14;            /* #0B0C0E */
+  --tp-texto-blanco: #FFFFFF;
+  --tp-texto-marfil: #F3EEE2;
+  --tp-texto-oro: #F2D88C;
+  --tp-lectura-texto: var(--tp-texto-marfil);
+  --tp-lectura-leida: #76767D;                 /* 4,3:1 sobre el fondo de lectura */
+  --tp-lectura-marca: var(--tp-oro);           /* subrayado de la palabra actual */
+  --tp-banda-opaca: 26 27 32;                  /* #1A1B20, con el fondo al 100 % */
+  --tp-banda-sobre: rgb(8 9 10 / 0.7);         /* sobre una presentación */
+  /* Halo: un contorno duro de 2 px y dos sombras suaves, sin desplazamiento. */
+  --tp-halo: 0 0 1px #000, 0 0 2px #000, 0 0 3px #000, 0 0 5px rgb(0 0 0 / 0.85), 0 0 14px rgb(0 0 0 / 0.5);
+
+  /* Tipografía (local) */
+  --tp-fuente-lectura: "Segoe UI", "Segoe UI Variable Display", system-ui, sans-serif;
+  --tp-fuente-ui: "Segoe UI", "Segoe UI Variable Text", system-ui, sans-serif;
+  --tp-fuente-mono: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  --tp-peso-lectura: 600;
+  /* Barra de estado: 20-24 px a 1600 de ancho (se lee a 2 m), 14-15 px a 400. */
+  --tp-ui-barra: clamp(14px, 1.4vw, 24px);
+  --tp-ui-barra-chica: clamp(12px, 1.1vw, 18px);
+
+  /* Las variables de styles.css heredan la paleta: lo que el tema no nombra queda coherente. */
+  --bg: var(--tp-obsidiana-bajo);
+  --fg: var(--tp-ui-1);
+  --dim: var(--tp-lectura-texto);
+  --accent: var(--tp-oro);
+  --accent-glow: rgb(217 176 76 / 0.35);
+  --warn: var(--tp-aviso);
+  --danger: var(--tp-error);
+  --directive: var(--tp-oro-claro);
+  --directive-bg: transparent;
+  --panel-bg: var(--tp-panel);
+  --panel-border: var(--tp-borde);
+}
+
+body[data-texto="blanco"] { --tp-lectura-texto: var(--tp-texto-blanco); }
+body[data-texto="marfil"] { --tp-lectura-texto: var(--tp-texto-marfil); }
+body[data-texto="oro"] { --tp-lectura-texto: var(--tp-texto-oro); --tp-lectura-marca: var(--tp-texto-blanco); }
+
+html, body {
+  font-family: var(--tp-fuente-ui);
+  color: var(--tp-ui-1);
+}
+body.mode-setup { background: var(--tp-obsidiana-bajo); }
+/* En lectura el fondo lo pinta .reader con su alfa; la ventana puede ser transparente. */
+body.mode-reader { background: transparent; }
+
+/* ===== Lectura ===== */
+.reader { background: rgb(var(--tp-lectura-fondo-rgb) / var(--tp-fondo-alfa, 1)); }
+
+.script-view {
+  font-family: var(--tp-fuente-lectura);
+  font-weight: var(--tp-peso-lectura);
+  color: var(--tp-lectura-texto);
+  letter-spacing: 0.003em;
+  /* El texto entra y sale fundido, no cortado en seco (vale también con el fondo transparente). */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+}
+body[data-halo="on"] .script-view { text-shadow: var(--tp-halo); }
+
+.script-view .w { color: var(--tp-lectura-texto); text-shadow: inherit; }
+.script-view .w.upcoming { color: var(--tp-lectura-texto); }
+.script-view .w.read { color: var(--tp-lectura-leida); }
+.script-view .w.current {
+  color: var(--tp-lectura-texto);
+  text-shadow: inherit;
+  text-decoration-line: underline;
+  text-decoration-color: var(--tp-lectura-marca);
+  text-decoration-thickness: 0.075em;
+  text-underline-offset: 0.16em;
+  text-decoration-skip-ink: none;
+}
+.script-view .w.skip.current { text-decoration-line: none; }
+
+.script-view .directive {
+  color: var(--tp-oro-claro);
+  background: none;
+  border-left: 4px solid var(--tp-oro);
+  border-radius: 0;
+  font-family: var(--tp-fuente-ui);
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.42em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 1;
+  box-shadow: none;
+}
+.script-view .directive.read { color: var(--tp-oro-oscuro); border-left-color: var(--tp-oro-oscuro); opacity: 1; }
+.script-view .directive.current { background: none; box-shadow: none; opacity: 1; }
+
+/* Banda: con el fondo al 100 % es una franja apenas más clara con filete de oro;
+   con el fondo transparente es oscura y translúcida. La mezcla sigue a --tp-fondo-alfa. */
+.banda-lectura {
+  background:
+    linear-gradient(rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1)), rgb(var(--tp-banda-opaca) / var(--tp-fondo-alfa, 1))),
+    var(--tp-banda-sobre);
+  border-radius: 16px;
+  box-shadow: inset 4px 0 0 rgb(217 176 76 / var(--tp-fondo-alfa, 1));
+}
+body[data-banda="off"] .banda-lectura { background: none; box-shadow: none; }
+
+.reticle { background: linear-gradient(90deg, transparent, rgb(217 176 76 / 0.22), transparent); }
+body[data-banda="on"] .reticle { opacity: 0; }
+
+/* ===== Barra de estado ===== */
+.barra {
+  background: var(--tp-grad-obsidiana);
+  color: var(--tp-ui-1);
+  font-family: var(--tp-fuente-ui);
+  font-size: var(--tp-ui-barra);
+  font-weight: 600;
+  opacity: 0.94;
+}
+.barra-modo {
+  background: var(--tp-campo);
+  border: 1px solid var(--tp-borde);
+  border-radius: 999px;
+}
+.barra-modo [data-modo],
+.segmentado > button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--tp-ui-2);
+  font: inherit;
+  font-weight: 600;
+}
+.barra-modo [data-modo][aria-pressed="true"],
+.segmentado > button[aria-pressed="true"] {
+  background: var(--tp-grad-oro);
+  color: #141414;
+}
+.barra-modo [data-modo]:hover:not([aria-pressed="true"]),
+.segmentado > button:hover:not([aria-pressed="true"]) {
+  background: transparent;
+  color: var(--tp-ui-1);
+  transform: none;
+}
+
+.barra-marcha { color: var(--tp-ui-1); }
+body[data-marcha="pausa"] .barra-marcha { color: var(--tp-oro-claro); }
+body[data-marcha="espera"] .barra-marcha { color: var(--tp-aviso); }
+body[data-marcha="cuenta"] .barra-marcha { color: var(--tp-oro-claro); }
+
+.barra-seccion {
+  color: var(--tp-oro-claro);
+  font-size: var(--tp-ui-barra-chica);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.barra-velocidad,
+.barra-tiempo {
+  font-family: var(--tp-fuente-mono);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.barra-velocidad { color: var(--tp-oro-claro); }
+.barra-tiempo { color: var(--tp-ui-1); }
+
+.barra-progreso { background: #24252A; }
+.barra-progreso-relleno {
+  width: calc(var(--tp-progreso, 0) * 100%);
+  background: var(--tp-grad-oro-h);
+}
+body[data-marcha="pausa"] .barra-progreso-relleno { background: var(--tp-grafito); }
+
+/* Chips: conexión, micrófono, modelo, sincronía. */
+.chip {
+  --chip: var(--tp-ok);
+  border: 1px solid var(--chip);
+  background: color-mix(in srgb, var(--chip) 12%, transparent);
+  border-radius: 999px;
+  color: var(--tp-ui-1);
+  font-size: var(--tp-ui-barra-chica);
+  font-weight: 600;
+}
+.chip::before {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-right: 0.45em;
+  border-radius: 50%;
+  background: var(--chip);
+  vertical-align: 0.12em;
+}
+.chip[data-nivel="aviso"] { --chip: var(--tp-aviso); }
+.chip[data-nivel="error"] { --chip: var(--tp-error); }
+
+/* ===== Cuenta atrás ===== */
+.cuenta-atras { background: rgb(8 9 10 / 0.78); color: var(--tp-ui-1); }
+.cuenta-num {
+  color: var(--tp-oro-palido);
+  font-family: var(--tp-fuente-lectura);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Configuración ===== */
+.panel {
+  background: var(--tp-grad-obsidiana);
+  border: 1px solid var(--tp-borde);
+}
+.panel h1 {
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--tp-oro-palido);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.status { color: var(--tp-ui-2); }
+.status[data-level="ok"] { color: var(--tp-ok); }
+.status[data-level="warn"] { color: var(--tp-aviso); }
+.status[data-level="error"] { color: var(--tp-error); }
+
+.panel-titulo {
+  color: var(--tp-oro);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--tp-borde);
+}
+label, .campo label { color: var(--tp-ui-1); letter-spacing: 0; text-transform: none; }
+.campo output, .campo .valor { color: var(--tp-oro-claro); font-family: var(--tp-fuente-mono); }
+
+textarea {
+  background: var(--tp-campo);
+  border-color: var(--tp-borde);
+  color: var(--tp-ui-1);
+  font-family: var(--tp-fuente-ui);
+}
+textarea:focus, select:focus { border-color: var(--tp-oro); }
+select {
+  background: var(--tp-campo);
+  color: var(--tp-ui-1);
+  border: 1px solid var(--tp-borde);
+  border-radius: 10px;
+  font-family: var(--tp-fuente-ui);
+}
+
+input[type="range"] { background: var(--tp-riel); accent-color: var(--tp-oro); }
+input[type="range"]::-webkit-slider-thumb {
+  background: var(--tp-oro-palido);
+  border: 2px solid var(--tp-obsidiana-bajo);
+}
+input[type="range"]::-webkit-slider-thumb:hover { box-shadow: 0 0 8px var(--accent-glow); }
+input[type="checkbox"] { accent-color: var(--tp-oro); }
+
+/* Interruptor: una casilla con aspecto de interruptor. */
+input[type="checkbox"].interruptor {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 52px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--tp-riel);
+  border: 1px solid var(--tp-borde);
+  position: relative;
+  cursor: pointer;
+}
+input[type="checkbox"].interruptor::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--tp-ui-2);
+  transition: left 0.15s;
+}
+input[type="checkbox"].interruptor:checked { background: var(--tp-grad-oro-h); border-color: transparent; }
+input[type="checkbox"].interruptor:checked::before { left: 26px; background: var(--tp-obsidiana-bajo); }
+input[type="checkbox"].interruptor:focus-visible { outline: 2px solid var(--tp-oro); outline-offset: 2px; }
+
+.muestra-color {
+  background: rgb(var(--tp-lectura-fondo-rgb));
+  border: 1px solid var(--tp-borde);
+  border-radius: 8px;
+  font-family: var(--tp-fuente-lectura);
+  font-weight: 600;
+}
+.muestra-color[data-color="blanco"] { color: var(--tp-texto-blanco); }
+.muestra-color[data-color="marfil"] { color: var(--tp-texto-marfil); }
+.muestra-color[data-color="oro"] { color: var(--tp-texto-oro); }
+.muestra-color[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--tp-obsidiana-bajo), 0 0 0 4px var(--tp-oro); }
+
+.segmentado {
+  background: var(--tp-campo);
+  border: 1px solid var(--tp-borde);
+  border-radius: 999px;
+}
+
+/* ===== Botones ===== */
+button {
+  background: var(--tp-campo);
+  border-color: var(--tp-borde);
+  color: var(--tp-ui-1);
+  font-family: var(--tp-fuente-ui);
+  font-weight: 600;
+  border-radius: 10px;
+}
+button:hover:not(:disabled) { background: #1A1B20; border-color: var(--tp-oro); }
+button:focus-visible { outline-color: var(--tp-oro); }
+.btn-primario,
+#btn-start, #btn-auto {
+  background: var(--tp-grad-oro);
+  border-color: transparent;
+  color: #141414;
+}
+.btn-primario:hover:not(:disabled),
+#btn-start:hover:not(:disabled), #btn-auto:hover:not(:disabled) {
+  background: var(--tp-grad-oro);
+  border-color: var(--tp-oro-palido);
+  filter: brightness(1.06);
+}
+.btn-secundario { background: var(--tp-campo); border-color: var(--tp-borde); color: var(--tp-ui-1); }
+.preajuste {
+  background: rgb(217 176 76 / 0.08);
+  border: 1px solid var(--tp-oro);
+  border-radius: 12px;
+  color: var(--tp-oro-claro);
+  text-align: left;
+}
+.preajuste:hover:not(:disabled) { background: rgb(217 176 76 / 0.14); }
+
+#btn-stealth { background: var(--tp-campo); border-color: rgb(224 106 85 / 0.55); color: var(--tp-ui-1); }
+#btn-stealth.unlocked { border-color: var(--tp-borde); opacity: 0.75; }
+#btn-topmost.active {
+  background: rgb(217 176 76 / 0.14);
+  border-color: var(--tp-oro);
+  color: var(--tp-oro-claro);
+}
+
+.hint { color: var(--tp-ui-3); }
+kbd {
+  background: var(--tp-campo);
+  border-color: var(--tp-borde);
+  color: var(--tp-ui-1);
+  font-family: var(--tp-fuente-mono);
+}
+
+/* ===== Avisos ===== */
+.notice {
+  --aviso: var(--tp-oro);
+  background: rgb(18 19 23 / 0.97);
+  border: 1px solid var(--tp-borde);
+  border-left: 5px solid var(--aviso);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
+  color: var(--tp-ui-1);
+}
+.notice-info { --aviso: var(--tp-oro); }
+.notice-warning { --aviso: var(--tp-aviso); }
+.notice-error { --aviso: var(--tp-error); background: rgb(18 19 23 / 0.97); }
+.notice-msg { color: var(--tp-ui-1); }
+.notice .notice-action { background: transparent; border-color: var(--aviso); color: var(--aviso); }
+.notice .notice-close { color: var(--tp-ui-2); }
+/* Ícono por tema: el glifo del diseño como máscara (SVG en línea, sin red). */
+.notice[data-tema]::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  background: var(--aviso);
+  -webkit-mask: var(--tp-glifo) center / contain no-repeat;
+  mask: var(--tp-glifo) center / contain no-repeat;
+}
+.notice[data-tema="conexion"] { --tp-glifo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 19' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 1V5M12 1V5M3 5H15V9C15 12.5 12.5 14.5 9 14.5C5.5 14.5 3 12.5 3 9ZM9 14.5V18'/%3E%3C/svg%3E"); }
+.notice[data-tema="micro"] { --tp-glifo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 19' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 1C11.2 1 12.5 2.6 12.5 4.5V9C12.5 11 11.2 12.5 9 12.5C6.8 12.5 5.5 11 5.5 9V4.5C5.5 2.6 6.8 1 9 1ZM2.5 8.5C2.5 12.5 5.5 15.5 9 15.5C12.5 15.5 15.5 12.5 15.5 8.5M9 15.5V18'/%3E%3C/svg%3E"); }
+.notice[data-tema="modelo"] { --tp-glifo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 4H14V14H4ZM7 1V4M11 1V4M7 14V17M11 14V17M1 7H4M1 11H4M14 7H17M14 11H17'/%3E%3C/svg%3E"); }
+
+/* ===== Indicadores de la versión anterior (si siguen en el HTML) ===== */
+.overlay { color: var(--tp-ui-3); font-family: var(--tp-fuente-mono); }
+#overlay-status.on { color: var(--tp-oro); }
+.overlay .ind[data-level="ok"] { color: var(--tp-ok); }
+#overlay-mode, #overlay-mode[data-mode="auto"] { color: var(--tp-oro-claro); }
+#overlay-mode[data-mode="voice"] { color: var(--tp-oro); }
+#overlay-mode[data-mode="voice_pending"] { color: var(--tp-aviso); }
+#overlay-topmost { color: var(--tp-oro-claro); text-shadow: none; }
+#overlay-stealth { color: var(--tp-error); text-shadow: none; }
+#overlay-sync[data-sync="resynced"] { color: var(--tp-ok); }
