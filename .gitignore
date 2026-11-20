@@ -15,6 +15,8 @@ logs/
 tests/fixtures/audio/
 tests/fixtures/audio_synth/
 replay_out/
+# Hito 85: miniaturas de las referencias (se rehacen solas)
+guiones/.cache/
 
 # Configuracion local
 config.json

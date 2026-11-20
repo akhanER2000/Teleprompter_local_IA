@@ -1,0 +1,292 @@
+{
+  "capturas": [
+    {
+      "archivo": "h85_texto_400.png",
+      "ancho": 400,
+      "tarjetas_visibles": 0,
+      "tapadas": [],
+      "fuera": [],
+      "scroll_h": false,
+      "refs": [
+        {
+          "at": 17,
+          "kind": "img",
+          "label": "img: portada.png",
+          "estado": "ref-actual",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 44,
+          "kind": "ppt",
+          "label": "ppt: presentacion.pptx",
+          "estado": "ref-proxima",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 78,
+          "kind": "pdf",
+          "label": "pdf: informe.pdf",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 108,
+          "kind": "code",
+          "label": "code: app.py",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 123,
+          "kind": "nota",
+          "label": "nota: Mostrar el gráfico de ventas antes de cerrar",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        }
+      ],
+      "vista": "texto"
+    },
+    {
+      "archivo": "h85_referencias_400.png",
+      "ancho": 400,
+      "tarjetas_visibles": 5,
+      "tapadas": [],
+      "fuera": [],
+      "scroll_h": false,
+      "refs": [
+        {
+          "at": 17,
+          "kind": "img",
+          "label": "img: portada.png",
+          "estado": "ref-actual",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 863
+        },
+        {
+          "at": 44,
+          "kind": "ppt",
+          "label": "ppt: presentacion.pptx",
+          "estado": "ref-proxima",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 1545
+        },
+        {
+          "at": 78,
+          "kind": "pdf",
+          "label": "pdf: informe.pdf",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 2305
+        },
+        {
+          "at": 108,
+          "kind": "code",
+          "label": "code: app.py",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": true,
+          "visible": true,
+          "top": 2938
+        },
+        {
+          "at": 123,
+          "kind": "nota",
+          "label": "nota: Mostrar el gráfico de ventas antes de cerrar",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": true,
+          "top": 3274
+        }
+      ],
+      "vista": "referencias"
+    },
+    {
+      "archivo": "h85_texto_1200.png",
+      "ancho": 1200,
+      "tarjetas_visibles": 0,
+      "tapadas": [],
+      "fuera": [],
+      "scroll_h": false,
+      "refs": [
+        {
+          "at": 17,
+          "kind": "img",
+          "label": "img: portada.png",
+          "estado": "ref-actual",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 44,
+          "kind": "ppt",
+          "label": "ppt: presentacion.pptx",
+          "estado": "ref-proxima",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 78,
+          "kind": "pdf",
+          "label": "pdf: informe.pdf",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 108,
+          "kind": "code",
+          "label": "code: app.py",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": true,
+          "visible": false,
+          "top": 0
+        },
+        {
+          "at": 123,
+          "kind": "nota",
+          "label": "nota: Mostrar el gráfico de ventas antes de cerrar",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": false,
+          "top": 0
+        }
+      ],
+      "vista": "texto"
+    },
+    {
+      "archivo": "h85_referencias_1200.png",
+      "ancho": 1200,
+      "tarjetas_visibles": 5,
+      "tapadas": [],
+      "fuera": [],
+      "scroll_h": false,
+      "refs": [
+        {
+          "at": 17,
+          "kind": "img",
+          "label": "img: portada.png",
+          "estado": "ref-actual",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 734
+        },
+        {
+          "at": 44,
+          "kind": "ppt",
+          "label": "ppt: presentacion.pptx",
+          "estado": "ref-proxima",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 1304
+        },
+        {
+          "at": 78,
+          "kind": "pdf",
+          "label": "pdf: informe.pdf",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": true,
+          "codigo": false,
+          "visible": true,
+          "top": 1846
+        },
+        {
+          "at": 108,
+          "kind": "code",
+          "label": "code: app.py",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": true,
+          "visible": true,
+          "top": 2343
+        },
+        {
+          "at": 123,
+          "kind": "nota",
+          "label": "nota: Mostrar el gráfico de ventas antes de cerrar",
+          "estado": "ref-lejos",
+          "error": null,
+          "img": false,
+          "codigo": false,
+          "visible": true,
+          "top": 2622
+        }
+      ],
+      "vista": "referencias"
+    }
+  ],
+  "prefs_sobre": {
+    "avance": "manual",
+    "velocidad": 6,
+    "letra": 8,
+    "interlineado": 1.45,
+    "texto": "marfil",
+    "fondo_pct": 0,
+    "banda": true,
+    "halo": true,
+    "espejo": false,
+    "pausa_asistido_s": 1.5,
+    "frenos": {
+      "confirm_words": 3,
+      "max_ahead": 6,
+      "max_wps": 6,
+      "sentence_guard": true
+    },
+    "vista": "referencias",
+    "ref_tam": "mediana",
+    "ref_opacidad": 85
+  },
+  "errores_js": [],
+  "peticiones_fuera": [],
+  "fallos": []
+}

@@ -73,9 +73,19 @@ def check_invariants(p: ParsedScript) -> None:
     prev_type = None
     for pos, s in enumerate(p.segments):
         t = s["type"]
-        assert t in {"word", "directive", "break"}
+        assert t in {"word", "directive", "ref", "break"}
         if t == "word":
             words_before += 1
+        elif t == "ref":
+            # Hito 85: misma regla de at_idx que una directiva; no da tokens ni corta el renglón.
+            expected = words_before
+            while expected < p.total_tokens and not p.tokens[expected].units:
+                expected += 1
+            assert s["at_idx"] == expected
+            assert s["kind"] in {"img", "ppt", "pdf", "code", "nota"}
+            assert s["text"].startswith("[") and s["text"].endswith("]")
+            assert s["label"].startswith(f"{s['kind']}: ")
+            continue   # no cuenta como vecino de un break
         elif t == "directive":
             assert set(s) == {"type", "text", "at_idx"}
             # La primera palabra con unidades que la sigue (o el total): la

@@ -1,0 +1,24 @@
+[Apertura]
+Buenas tardes a todos. Antes de empezar, miren la portada del proyecto que vamos a presentar hoy.
+[img: portada.png]
+Esta imagen resume en una sola vista lo que vamos a recorrer en los próximos minutos.
+
+[Resultados]
+En la segunda diapositiva están los tres resultados principales del trimestre.
+[ppt: presentacion.pptx#2]
+Cada barra corresponde a un mes, y la tendencia es claramente ascendente desde enero hasta marzo.
+
+El informe completo trae el detalle, y en la página tres está el gráfico de ventas por mes.
+[pdf: informe.pdf#3]
+Ahí se ve que marzo fue el mejor mes de todo el período que medimos.
+
+[Cómo se calcula]
+El cálculo del crecimiento es muy sencillo y cabe en unas pocas líneas de código.
+[code: app.py#L11-L15]
+Se toma el primer mes y el último, y se calcula la diferencia en porcentaje.
+
+[Cierre]
+[nota: Mostrar el gráfico de ventas antes de cerrar]
+Para terminar, volvamos un momento al gráfico de ventas antes de abrir las preguntas.
+
+Muchas gracias por su atención.

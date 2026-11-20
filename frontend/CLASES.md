@@ -16,6 +16,7 @@ cambia aquí y en los dos lados a la vez.
 | `data-halo` | `on` · `off` | contorno oscuro en las letras |
 | `data-texto` | `blanco` · `marfil` · `oro` | color del texto de lectura |
 | `data-espejo` | `on` · `off` | lectura volteada (de `styles.css`) |
+| `data-vista` | `texto` · `referencias` | hito 85: con `referencias` se ven las tarjetas |
 
 ## Variables CSS (en `:root`, las escribe `app.js`)
 
@@ -26,6 +27,14 @@ cambia aquí y en los dos lados a la vez.
 | `--tp-escala` | multiplicador de la letra (1..20 → 0,56..1,75) |
 | `--tp-interlineado` | interlineado de la lectura |
 | `--tp-linea` | alto real de un renglón en px (lo usa la banda) |
+| `--tp-ref-pct` | hito 85: ancho de las tarjetas, 15, 25 o 35 (% del ancho) |
+| `--tp-ref-opacidad` | hito 85: 0,4..1, opacidad de las tarjetas |
+
+Hito 85, tarjetas de referencia: `ref-card[data-tipo=img|ppt|pdf|code|nota]` dentro de
+`script-view`, con `ref-lejos` · `ref-proxima` (se anuncia) · `ref-actual` · `ref-leida`,
+`ref-cargando` y `ref-error` (grafito). Dentro: `ref-etiqueta`, `ref-cuerpo` y, para el
+código, `pre.ref-codigo` con spans `c-*` de Pygments. «Ampliar»: `ref-zoom` (con
+`data-tipo` y `ref-error`), ids `ref-zoom-etiqueta` y `ref-zoom-cuerpo`. Chip `chip-ref`.
 
 `styles.css` define además `--tp-barra-h`, `--tp-margen` y `--tp-letra-base`; el tema
 aporta `--tp-halo`, `--tp-banda`, `--tp-texto-blanco/marfil/oro` y `--tp-lectura-leida`.

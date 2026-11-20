@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -32,6 +32,7 @@ from backend.protocol import (
     control_error_msg, control_forward_msg, echo_scroll_msg, encode, estado_control_msg,
     parse_client_message, parse_control_message, script_loaded_msg, state_msg, status_msg,
 )
+from backend.refs import serve_ref
 from backend.voice import LISTENING_MESSAGE, SAMPLE_RATE, VAD_TAIL_S, VoiceLoop
 from tools.voice_brakes import BrakeParams
 from tools.script_matcher import ScriptMatcher
@@ -821,6 +822,14 @@ def create_app(settings: Settings | None = None, *,
             raise HTTPException(status_code=404, detail="No existe ese guion en guiones/.")
         text = await asyncio.to_thread(path.read_text, encoding="utf-8-sig")
         return PlainTextResponse(text)
+
+    @app.get("/api/ref")
+    async def ref_asset(request: Request, tipo: str = "", archivo: str = "", guion: str | None = None,
+                        pagina: int | None = None, desde: int | None = None, hasta: int | None = None):
+        """Hito 85: miniatura (PNG) o código coloreado (JSON) de una referencia del guion."""
+        return await serve_ref(server_mod_scripts_dir(), tipo=tipo, archivo=archivo, guion=guion,
+                               pagina=pagina, desde=desde, hasta=hasta,
+                               fetch_site=request.headers.get("sec-fetch-site"))
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

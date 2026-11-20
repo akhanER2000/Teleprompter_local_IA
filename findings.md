@@ -29,3 +29,8 @@
 1. **Cuello de botella audio→STT:** Si el chunk tarda > 500 ms en transcribirse, se acumula lag. Mitigación: usar `medium` si `large-v3` no rinde.
 2. **Acentos / muletillas:** "este…", "eh…" pueden confundir matching. VAD ayuda pero no elimina.
 3. **Drift acumulado:** Si el matching pierde sincronía, el scroll se descalibra. Mitigación: hotkey de "resync manual" (no implementado en MVP, pendiente).
+
+## Hito 85
+- **El `.pyc` puede mentir en un sabotaje:** Python valida el bytecode por `mtime` en segundos y tamaño. Dos sabotajes del mismo tamaño escritos en el mismo segundo reutilizan el `.pyc` del anterior y la prueba corre código viejo (el sabotaje de `pdf` dio verde así). `tools/sabotajes_85.py` usa un `PYTHONPYCACHEPREFIX` propio por corrida. `tools/sabotajes_84.py` tiene el mismo riesgo latente.
+- **PowerPoint no está en esta máquina; LibreOffice sí** (`J:\DevToolsApps\LibreOffice`, fuera de `Program Files`): se encuentra por el registro COM (`com.sun.star.ServiceManager`) o con `TP_SOFFICE`.
+- **Pillow guarda las páginas de un PDF en JPEG:** los colores llegan casi exactos, no exactos.

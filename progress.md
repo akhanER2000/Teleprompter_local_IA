@@ -95,3 +95,16 @@ Rama `fix/pulido-integral`, creada desde `main` tras adelantarla (fast-forward) 
 - Con el matcher voraz y bloques sin solapamiento, una lectura natural todavía puede quedarse pegada (en una corrida se detuvo en la palabra 50 de 89 tras dos bloques vacíos). Es exactamente C3 y A4, y se resuelve en la Fase 2.
 - Al cargar un guion que empieza con un token sin unidades (por ejemplo una viñeta con guion largo), el cursor inicial queda sobre ese token: es cosmético y se ajusta en la Fase 6.
 - `faster_whisper.decode_audio` no funciona con PyAV 19 (la app no lo usa); la Fase 5 decide la versión fijada de `av`.
+
+## 2026-11-20 · Hito 85: vista con referencias (R1 a R6)
+
+**Qué cambió**
+- Parser: `[img: …]`, `[ppt: …#N]`, `[pdf: …#N]`, `[code: …#L10-L25]` y `[nota: …]` son segmentos `ref` (tipo, archivo, fragmento, etiqueta y `at_idx`). No dan tokens ni son secciones; una referencia sola en su renglón no cambia los saltos del texto.
+- Servidor: `GET /api/ref` (`backend/refs.py`) resuelve la ruta (`guiones/<guion>_recursos/`, `guiones/`, absoluta), dibuja y cachea la miniatura en `guiones/.cache/` (`tools/ref_thumbs.py`, `tools/slides_engine.py`) o colorea el código (`tools/code_highlight.py`). Fallos: 404 «No encontrado: nombre»; sin motor de diapositivas, 501 `SIN_MOTOR`.
+- Frontend: vistas Solo texto y Con referencias (tecla V, orden `view`, configuración, recordada), tarjetas al costado del renglón, tamaño, opacidad, anuncio previo, Ampliar (tecla Z, orden `ref_zoom`), «Sobre presentación» con las referencias al 85 %.
+- /control: órdenes `view` y `ref_zoom`; estado con `vista`, `ref_actual` y `ref_ampliada`.
+- Dependencias nuevas fijadas: pillow 11.0.0, pypdfium2 4.30.0; Pygments 2.21.0 pasa a directa.
+
+**Por qué**: pedido del 20-11-2026 (DECISIONES_85.md).
+
+**Mediciones**: 728 pruebas pasan (694 + 31 nuevas + 3 de test_entorno por las dependencias fijadas). 17 sabotajes en rojo (`tools/sabotajes_85.py`). Diapositiva con LibreOffice: 1,9 s la primera vez, luego desde la caché. Detalle en `docs/hito85/README.md`.

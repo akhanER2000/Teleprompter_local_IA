@@ -35,6 +35,7 @@ Flujo de voz: captura continua (buffer circular 16 kHz) → VAD → Whisper sobr
 - Hito 84, doble clic en la raíz: `ABRIR_TELEPROMPTER.bat` (app nativa) o `ABRIR_EN_NAVEGADOR.bat` (backend + navegador en 8765). La tecla Prompter abre `scripts\start_stealth.vbs`; los tres usan `.venv312`.
 - Controles externos (Stream Deck): WebSocket `ws://127.0.0.1:8765/control`, contrato T6 en `kit_Galleon100SD/docs/plan84/DECISIONES_84.md`. Clases y variables que comparte la lógica con `tema.css`: `frontend/CLASES.md`.
 - Pruebas de extremo a extremo y capturas (Chrome headless, sin red): `tests\test_e2e_control.py`, `tools\capturas_v3.py`; sabotajes de las puertas del hito 84: `tools\sabotajes_84.py`.
+- Hito 85, referencias en el guion (`[img: …]`, `[ppt: …#N]`, `[pdf: …#N]`, `[code: …#L10-L25]`, `[nota: …]`): `docs/hito85/README.md`. Pruebas `tests\test_referencias.py` y `tests\test_e2e_referencias.py`; capturas `tools\capturas_85.py`; sabotajes `tools\sabotajes_85.py`.
 - Tests (sin GPU, micrófono ni red): `.venv312\Scripts\python.exe -m pytest -q`.
 - Replay de grabaciones: `.venv312\Scripts\python.exe tools\replay.py --wav tests\fixtures\audio\<archivo>.wav --script guiones\ejemplo.txt`.
 - Grabar muestras: `.venv312\Scripts\python.exe tools\record_sample.py --name <nombre> --seconds 90`.

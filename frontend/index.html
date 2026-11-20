@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="stylesheet" href="/static/tema.css" />
 </head>
-<body class="mode-setup" data-modo="manual" data-marcha="pausa" data-banda="off" data-halo="off" data-texto="marfil">
+<body class="mode-setup" data-modo="manual" data-marcha="pausa" data-banda="off" data-halo="off" data-texto="marfil" data-vista="texto">
   <!-- Avisos visibles en setup y en lectura (conexión, modelo, errores del backend) -->
   <div id="notices" class="notices" aria-live="polite"></div>
 
@@ -34,7 +34,7 @@
         </div>
         <label for="script" class="campo-etiqueta">O pégalo aquí</label>
         <textarea id="script" rows="10" placeholder="Pega aquí el guion completo…&#10;&#10;Deja una línea en blanco entre párrafos.&#10;Usa [corchetes] para secciones y directivas: no se leen en voz alta."></textarea>
-        <p class="hint">Una línea en blanco separa párrafos. [Corchetes]: secciones, no se leen.</p>
+        <p class="hint">Una línea en blanco separa párrafos. [Corchetes]: secciones, no se leen. [img: foto.png], [nota: …]: referencias (ver Vista).</p>
         <button id="btn-load" type="button" class="btn-secundario">Cargar guion</button>
       </section>
 
@@ -74,8 +74,28 @@
           <label for="chk-halo">Halo <small>Contorno oscuro en cada letra</small></label>
           <input type="checkbox" class="interruptor" id="chk-halo" />
         </div>
-        <button id="btn-preajuste" type="button" class="preajuste">Sobre presentación <small>Banda + halo + fondo al 0 %</small></button>
+        <button id="btn-preajuste" type="button" class="preajuste">Sobre presentación <small>Banda + halo + fondo al 0 % + referencias al 85 %</small></button>
         <button id="btn-preview" type="button" class="btn-secundario" title="Muestra unos segundos cómo se ve la lectura">Vista previa</button>
+
+        <h2 class="panel-titulo" id="t-refs">Vista</h2>
+        <div class="segmentado" id="seg-vista" role="group" aria-label="Vista del guion">
+          <button type="button" data-vista="texto" aria-pressed="true">Solo texto</button>
+          <button type="button" data-vista="referencias" aria-pressed="false">Con referencias</button>
+        </div>
+        <div class="campo campo-col">
+          <span class="campo-etiqueta" id="t-reftam">Tamaño de las referencias</span>
+          <div class="segmentado" id="seg-reftam" role="group" aria-labelledby="t-reftam">
+            <button type="button" data-reftam="chica" aria-pressed="false">Chica</button>
+            <button type="button" data-reftam="mediana" aria-pressed="true">Mediana</button>
+            <button type="button" data-reftam="grande" aria-pressed="false">Grande</button>
+          </div>
+        </div>
+        <div class="campo">
+          <label for="ref-opacidad">Opacidad de las referencias</label>
+          <output id="ref-opacidad-label" for="ref-opacidad">100 %</output>
+          <input type="range" id="ref-opacidad" min="40" max="100" step="5" value="100" />
+        </div>
+        <p class="hint">[img: foto.png] · [ppt: charla.pptx#5] · [pdf: informe.pdf#3] · [code: app.py#L10-L25] · [nota: texto]. Se buscan en guiones/&lt;guion&gt;_recursos/, luego en guiones/ y luego como ruta absoluta.</p>
       </section>
 
       <section class="panel-seccion" aria-labelledby="t-avance">
@@ -146,6 +166,8 @@
       <span class="nativo hidden"><kbd>L</kbd> invisible en capturas</span>
       <span class="nativo hidden"><kbd>T</kbd> siempre adelante</span>
       <span><kbd>O</kbd> fondo sí/no</span>
+      <span><kbd>V</kbd> vista</span>
+      <span><kbd>Z</kbd> ampliar referencia</span>
     </footer>
   </div>
 
@@ -164,6 +186,7 @@
         <span class="chip hidden" id="chip-stealth" data-nivel="ok">Invisible</span>
         <span class="chip hidden" id="chip-topmost" data-nivel="ok">Adelante</span>
         <span class="chip hidden" id="chip-stats" data-nivel="ok"></span>
+        <span class="chip hidden" id="chip-ref" data-nivel="ok"></span>
       </span>
       <span class="barra-seccion" id="barra-seccion"></span>
       <span class="barra-velocidad" id="barra-velocidad">vel 6 · 180 ppm</span>
@@ -174,6 +197,10 @@
       <div class="banda-lectura" id="banda"></div>
       <div class="reticle"></div>
       <div id="script-view" class="script-view"></div>
+      <figure id="ref-zoom" class="ref-zoom hidden" aria-live="polite">
+        <figcaption class="ref-etiqueta" id="ref-zoom-etiqueta"></figcaption>
+        <div class="ref-cuerpo" id="ref-zoom-cuerpo"></div>
+      </figure>
       <div id="preview-sample" class="preview-sample hidden">
         <p><span class="w read">Así</span> <span class="w read">se</span> <span class="w read">verá</span> <span class="w current">el</span> <span class="w upcoming">texto</span> <span class="w upcoming">de</span> <span class="w upcoming">tu</span> <span class="w upcoming">teleprompter</span> <span class="w upcoming">con</span> <span class="w upcoming">este</span> <span class="w upcoming">fondo.</span> <span class="w upcoming">Lo</span> <span class="w upcoming">que</span> <span class="w upcoming">haya</span> <span class="w upcoming">detrás</span> <span class="w upcoming">se</span> <span class="w upcoming">alcanza</span> <span class="w upcoming">a</span> <span class="w upcoming">ver.</span></p>
       </div>

@@ -88,7 +88,9 @@ class Cdp:
 
     def external(self) -> list[str]:
         """Peticiones fuera de 127.0.0.1 (regla 1: 100 % local)."""
-        return [u for u in self.urls if not u.startswith(("http://127.0.0.1", "ws://127.0.0.1", "data:", "about:"))]
+        # blob:http://127.0.0.1 es memoria de la propia página (miniaturas del hito 85), no red.
+        return [u for u in self.urls if not u.startswith(("http://127.0.0.1", "ws://127.0.0.1", "data:", "about:",
+                                                           "blob:http://127.0.0.1"))]
 
     async def call(self, method: str, **params):
         self.n += 1

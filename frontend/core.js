@@ -16,6 +16,12 @@
   const VEL_MIN = 1, VEL_MAX = 20;          // contrato T6: velocidad 1..20
   const LETRA_MIN = 1, LETRA_MAX = 20;      // nivel de letra; 8 = escala 1,0
   const LETRA_DEFECTO = 8;
+  // Hito 85 (R1, R3): vista y tarjetas de referencia.
+  const VISTAS = ["texto", "referencias"];
+  const REF_TAMANOS = { chica: 15, mediana: 25, grande: 35 };   // % del ancho
+  const REF_OPACIDAD_MIN = 40, REF_OPACIDAD_MAX = 100, REF_OPACIDAD_PRESENTACION = 85;
+  const REF_ANUNCIO = 12;    // palabras antes de la referencia: se anuncia
+  const REF_DESPUES = 40;    // palabras después: sigue siendo «la de ahora»
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -38,6 +44,9 @@
       espejo: false,
       pausa_asistido_s: 1.5,
       frenos: { confirm_words: 3, max_ahead: 6, max_wps: 6, sentence_guard: true },
+      vista: "texto",          // R1: «Solo texto», como antes del hito 85
+      ref_tam: "mediana",
+      ref_opacidad: 100,
     };
   }
 
@@ -64,12 +73,15 @@
         max_wps: num(fr.max_wps, 0.5, 10, d.frenos.max_wps),
         sentence_guard: typeof fr.sentence_guard === "boolean" ? fr.sentence_guard : d.frenos.sentence_guard,
       },
+      vista: VISTAS.includes(p.vista) ? p.vista : d.vista,
+      ref_tam: Object.prototype.hasOwnProperty.call(REF_TAMANOS, p.ref_tam) ? p.ref_tam : d.ref_tam,
+      ref_opacidad: Math.round(num(p.ref_opacidad, REF_OPACIDAD_MIN, REF_OPACIDAD_MAX, d.ref_opacidad)),
     };
   }
 
-  /** Preajuste «Sobre presentación»: banda, halo y fondo al 0 %. */
+  /** Preajuste «Sobre presentación»: banda, halo, fondo al 0 % y referencias al 85 % (R3). */
   function preajustePresentacion(p) {
-    return { ...p, banda: true, halo: true, fondo_pct: 0 };
+    return { ...p, banda: true, halo: true, fondo_pct: 0, ref_opacidad: REF_OPACIDAD_PRESENTACION };
   }
 
   /**
@@ -91,6 +103,12 @@
           ? MODOS[(MODOS.indexOf(p.avance) + 1) % MODOS.length]
           : (MODOS.includes(value) ? value : p.avance);
         return { ...p, avance: next };
+      }
+      case "view": {   // hito 85 (R5)
+        const next = value === "siguiente"
+          ? VISTAS[(VISTAS.indexOf(p.vista) + 1) % VISTAS.length]
+          : (VISTAS.includes(value) ? value : p.vista);
+        return { ...p, vista: next };
       }
       default: return null;
     }
@@ -172,6 +190,47 @@
     return now - silencioDesde < pausaS;
   }
 
+  // ===== Referencias (hito 85) =====
+
+  /**
+   * La referencia «cerca» de la posición: la última cuyo anuncio ya empezó
+   * (at - anuncio <= cur) y que no quedó atrás (cur <= at + despues). Así la
+   * que viene se anuncia antes de llegar. `ats` ordenado. Devuelve k o -1.
+   */
+  function refCercana(cur, ats, anuncio = REF_ANUNCIO, despues = REF_DESPUES) {
+    const k = floorIndex(ats.map((a) => a - anuncio), cur);
+    if (k < 0) return -1;
+    return cur <= ats[k] + despues ? k : -1;
+  }
+
+  /** Estado de una tarjeta: proxima (se anuncia), actual, leida o lejos. */
+  function refEstado(cur, at, anuncio = REF_ANUNCIO, despues = REF_DESPUES) {
+    if (cur < at - anuncio) return "lejos";
+    if (cur < at) return "proxima";
+    return cur <= at + despues ? "actual" : "leida";
+  }
+
+  /** URL local de la miniatura o del código de una referencia (null para una nota). */
+  function refUrl(ref, guion) {
+    if (!ref || ref.kind === "nota" || !ref.file) return null;
+    const q = new URLSearchParams({ tipo: ref.kind, archivo: ref.file });
+    if (guion) q.set("guion", guion);
+    if ((ref.kind === "ppt" || ref.kind === "pdf") && Number.isInteger(ref.page)) q.set("pagina", String(ref.page));
+    if (ref.kind === "code" && Array.isArray(ref.lines)) {
+      q.set("desde", String(ref.lines[0]));
+      q.set("hasta", String(ref.lines[1]));
+    }
+    return `/api/ref?${q.toString()}`;
+  }
+
+  /** Etiqueta de la tarjeta: «PPT · informe.pptx #5». */
+  function refEtiqueta(ref) {
+    if (!ref) return "";
+    if (ref.kind === "nota") return "NOTA";
+    const name = String(ref.file || "").replace(/\\/g, "/").split("/").pop() || String(ref.file || "");
+    return `${String(ref.kind).toUpperCase()} · ${name}${ref.frag ? ` #${ref.frag}` : ""}`;
+  }
+
   /** Tiempo m:ss (o h:mm:ss). Sin dato, guion. */
   function formatoTiempo(s) {
     if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return "—";
@@ -187,5 +246,7 @@
     preajustePresentacion, aplicarOrdenPrefs, floorIndex, objetivoParrafoAnterior,
     objetivoSeccionSiguiente, seccionActual, objetivoLineas, pasoFijo, asistidoPuede,
     formatoTiempo,
+    VISTAS, REF_TAMANOS, REF_OPACIDAD_MIN, REF_OPACIDAD_MAX, REF_OPACIDAD_PRESENTACION,
+    REF_ANUNCIO, REF_DESPUES, refCercana, refEstado, refUrl, refEtiqueta,
   };
 });

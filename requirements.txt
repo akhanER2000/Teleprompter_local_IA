@@ -15,3 +15,9 @@ sounddevice==0.4.7
 numpy==1.26.4
 num2words==0.5.14
 pywebview==6.2.1
+# Hito 85 (R4): miniaturas de las referencias del guion, todo local. Pillow (imágenes),
+# pypdfium2 (páginas de PDF y diapositivas ya convertidas a PDF) y Pygments (código
+# coloreado; antes solo llegaba como dependencia de pytest).
+pillow==11.0.0
+pypdfium2==4.30.0
+Pygments==2.21.0

@@ -169,6 +169,13 @@
     chipStats: $("chip-stats"),
     cuenta: $("cuenta"),
     cuentaNum: $("cuenta-num"),
+    // Hito 85: referencias
+    refOpacidad: $("ref-opacidad"),
+    refOpacidadLabel: $("ref-opacidad-label"),
+    refZoom: $("ref-zoom"),
+    refZoomLabel: $("ref-zoom-etiqueta"),
+    refZoomBody: $("ref-zoom-cuerpo"),
+    chipRef: $("chip-ref"),
   };
 
   // ===== Estado =====
@@ -227,6 +234,11 @@
     scriptName: null,        // nombre en guiones/, si vino de ahí
     pendingName: null,
     debugStats: false,
+    // Hito 85: referencias (tarjetas fuera del flujo del texto)
+    refs: [],                // { seg, at, card, body, state, loaded, loading, url }
+    refAts: [],              // at de cada referencia (no decreciente)
+    refNear: -1,             // índice de la referencia cerca (anunciada o actual), o -1
+    zoom: null,              // { r, timer } mientras se muestra «Ampliar»
   };
   let prefs = TPCore.prefsDefecto();   // se cargan de localStorage al iniciar
 
@@ -599,9 +611,10 @@
     state.restoreIdx = null;
     if (state.mode === "auto" && kind !== "resync") setMode("idle");
 
-    renderScript(msg, idx);
+    // El nombre va antes de dibujar: las referencias se buscan en <nombre>_recursos/.
     state.scriptName = typeof msg.name === "string" && msg.name ? msg.name
       : (kind === "user" ? state.pendingName : null);
+    renderScript(msg, idx);
     state.clock = { since: null, elapsed: 0 };
     if (!els.scriptText.value.trim() && typeof msg.text === "string") els.scriptText.value = msg.text;
     const total = state.script.total;
@@ -1120,6 +1133,7 @@
     const dirAts = [];      // inicio del rango de cada directiva (no decreciente)
     const paraStarts = [];  // primera palabra de cada párrafo
     const rawAts = [];      // at_idx recibido, recortado y no decreciente
+    const refSegs = [];     // hito 85: referencias (no son secciones ni cortan el texto)
     const frag = document.createDocumentFragment();
     let para = null;        // párrafo abierto
     let gap = false;        // el próximo bloque empieza tras un salto de párrafo
@@ -1171,6 +1185,8 @@
         dirAts.push(Math.min(at, wordsSeen));
         gap = false;
         para = null;
+      } else if (seg.type === "ref") {
+        refSegs.push(seg);
       }
     }
 
@@ -1182,9 +1198,15 @@
       dirEls[k].classList.add(directiveState(dirAts[k], dirEnds[k], cur));
     }
 
+    closeZoom();
+    const refs = buildRefCards(refSegs, total);
+    for (const r of refs) frag.appendChild(r.card);
     els.scriptView.textContent = "";
     els.scriptView.appendChild(frag);
     els.scriptView.scrollTop = 0;
+    state.refs = refs;
+    state.refAts = refs.map((r) => r.at);
+    state.refNear = -1;
     state.script = {
       id: msg.script_id || null,
       text: typeof msg.text === "string" ? msg.text : null,
@@ -1200,6 +1222,9 @@
     state.secNames = dirEls.map((el) => el.textContent.replace(/^\[|\]$/g, "").trim());
     state.currentIdx = cur;
     state.lastLineTop = null;
+    updateRefStates();
+    layoutRefs();
+    loadAllRefs();
     followCurrent(true, true);
   }
 
@@ -1227,6 +1252,7 @@
       forEachDirty(prev, cur, s.total, state.dirAts, state.dirEnds,
         (i) => setWordClass(i, cur),
         (k) => setDirectiveClass(k, cur));
+      if (state.refs.length) updateRefStates();
     }
     if (cur !== prev || opts.recenter) {
       followCurrent(!!opts.instant || Math.abs(cur - prev) > JUMP_INSTANT, !!opts.recenter);
@@ -1281,6 +1307,7 @@
     els.body.classList.remove("mode-setup");
     els.body.classList.add("mode-reader");
     measureLine();
+    layoutRefs();   // oculto no tenía medidas
     followCurrent(true, true);
   }
 
@@ -1295,6 +1322,209 @@
     pauseAll();
     exitReaderMode();
     updateUI();
+  }
+
+  // ===== Referencias (hito 85, R1-R3) =====
+  // Cada referencia es una tarjeta absoluta dentro de script-view, al costado
+  // del renglón de su palabra `at`: se desplaza con el texto y no lo tapa
+  // (con la vista «Con referencias» el texto deja libre la columna derecha).
+  const ZOOM_MS = 8000;           // «Ampliar» se cierra solo, o al volver a pulsar
+  const REF_GAP_PX = 10;          // separación mínima entre tarjetas seguidas
+  const REF_CONCURRENCIA = 2;     // miniaturas pedidas a la vez
+
+  function refName(seg) {
+    return String(seg.file || "").replace(/\\/g, "/").split("/").pop() || String(seg.file || "");
+  }
+
+  function buildRefCards(refSegs, total) {
+    for (const r of state.refs) if (r.url) URL.revokeObjectURL(r.url);
+    const refs = [];
+    let last = 0;
+    for (const seg of refSegs) {
+      let at = Number.isInteger(seg.at_idx) ? clampIdx(seg.at_idx, total) : last;
+      if (at < last) at = last;
+      last = at;
+      const card = document.createElement("figure");
+      card.className = "ref-card ref-lejos";
+      card.dataset.tipo = String(seg.kind || "");
+      const cap = document.createElement("figcaption");
+      cap.className = "ref-etiqueta";
+      cap.textContent = TPCore.refEtiqueta(seg);
+      const body = document.createElement("div");
+      body.className = "ref-cuerpo";
+      card.append(cap, body);
+      refs.push({ seg, at, card, body, state: "ref-lejos", loaded: false, loading: null, url: null });
+    }
+    return refs;
+  }
+
+  function showRefError(r, text) {
+    r.card.classList.add("ref-error");
+    r.body.textContent = text;
+  }
+
+  /** Pide la miniatura (o el código) una sola vez; un fallo queda escrito en la tarjeta. */
+  function loadRef(r) {
+    if (r.loaded) return r.loading || Promise.resolve();
+    r.loaded = true;
+    const seg = r.seg;
+    if (seg.kind === "nota") {
+      r.body.textContent = String(seg.note ?? "");
+      return Promise.resolve();
+    }
+    if (seg.bad_frag) {
+      showRefError(r, `No encontrado: ${refName(seg)}#${seg.frag}`);
+      return Promise.resolve();
+    }
+    const url = TPCore.refUrl(seg, state.scriptName);
+    if (!url) {
+      showRefError(r, `No encontrado: ${refName(seg)}`);
+      return Promise.resolve();
+    }
+    r.card.classList.add("ref-cargando");
+    r.body.textContent = "Cargando…";
+    r.loading = (async () => {
+      let resp;
+      try {
+        resp = await fetch(url);
+      } catch {
+        showRefError(r, `No encontrado: ${refName(seg)}`);
+        return;
+      }
+      if (!resp.ok) {
+        let detail = null;
+        try { detail = (await resp.json()).detail; } catch { /* sin cuerpo JSON */ }
+        showRefError(r, typeof detail === "string" && detail ? detail : `No encontrado: ${refName(seg)}`);
+        return;
+      }
+      if (seg.kind === "code") {
+        const data = await resp.json();
+        const pre = document.createElement("pre");
+        pre.className = "ref-codigo";
+        pre.innerHTML = String(data.html ?? "");   // HTML de Pygments: el texto viene escapado
+        pre.dataset.desde = String(data.desde ?? "");
+        r.body.replaceChildren(pre);
+      } else {
+        r.url = URL.createObjectURL(await resp.blob());
+        const img = document.createElement("img");
+        img.alt = TPCore.refEtiqueta(seg);
+        img.src = r.url;
+        try { await img.decode(); } catch { /* se dibuja igual al cargar */ }
+        r.body.replaceChildren(img);
+      }
+    })().catch((err) => {
+      console.error("Referencia:", err);
+      showRefError(r, `No encontrado: ${refName(seg)}`);
+    }).finally(() => {
+      r.card.classList.remove("ref-cargando");
+      layoutRefs();
+      if (state.zoom && state.zoom.r === r) renderZoom();
+    });
+    return r.loading;
+  }
+
+  /** Con la vista «Con referencias», pide todas las tarjetas (como mucho dos a la vez). */
+  function loadAllRefs() {
+    if (prefs.vista !== "referencias") return;
+    const queue = state.refs.filter((r) => !r.loaded);
+    let active = 0;
+    const next = () => {
+      while (active < REF_CONCURRENCIA && queue.length) {
+        const r = queue.shift();
+        active++;
+        loadRef(r).finally(() => { active--; next(); });
+      }
+    };
+    next();
+  }
+
+  function refAnchor(at) {
+    const s = state.script;
+    if (!s) return null;
+    if (at < s.total && state.wordEls[at]) return state.wordEls[at];
+    for (let i = Math.min(at, s.total) - 1; i >= 0; i--) if (state.wordEls[i]) return state.wordEls[i];
+    return null;
+  }
+
+  /** Coloca cada tarjeta a la altura del renglón de su palabra, sin pisar a la anterior. */
+  function layoutRefs() {
+    if (prefs.vista !== "referencias" || !state.refs.length) return;
+    if (!els.body.classList.contains("mode-reader")) return;   // oculto no hay medidas
+    let bottom = -Infinity;
+    for (const r of state.refs) {
+      const a = refAnchor(r.at);
+      let top = a ? a.offsetTop : 0;
+      if (top < bottom + REF_GAP_PX) top = bottom + REF_GAP_PX;
+      r.card.style.top = `${Math.round(top)}px`;
+      bottom = top + r.card.offsetHeight;
+    }
+  }
+
+  /** Clases de anuncio (próxima, actual, leída) y la referencia cerca para los controles. */
+  function updateRefStates() {
+    const cur = state.currentIdx;
+    for (const r of state.refs) {
+      const st = `ref-${TPCore.refEstado(cur, r.at)}`;
+      if (st !== r.state) {
+        r.card.classList.remove(r.state);
+        r.card.classList.add(st);
+        r.state = st;
+      }
+    }
+    const near = TPCore.refCercana(cur, state.refAts);
+    if (near !== state.refNear) {
+      state.refNear = near;
+      updateRefChip();
+      queueEstado();
+    }
+  }
+
+  function nearRef() {
+    return state.refNear >= 0 ? state.refs[state.refNear] : null;
+  }
+
+  function updateRefChip() {
+    const r = nearRef();
+    setChip(els.chipRef, r && prefs.vista === "referencias" && !state.zoom
+      ? [`${TPCore.refEtiqueta(r.seg)} · Z ampliar`, "ok"] : null);
+  }
+
+  // «Ampliar» (tecla Z o la orden ref_zoom): la referencia cerca, grande, unos segundos.
+  function toggleZoom() {
+    if (state.zoom) { closeZoom(); return; }
+    const r = nearRef();
+    if (!r) {
+      notify("info", "No hay una referencia cerca para ampliar.", { channel: "ref" });
+      return;
+    }
+    state.zoom = { r, timer: setTimeout(closeZoom, ZOOM_MS) };
+    renderZoom();
+    els.refZoom.classList.remove("hidden");
+    loadRef(r);
+    updateRefChip();
+    updateUI();
+    sendEstado(true);
+  }
+
+  function renderZoom() {
+    const z = state.zoom;
+    if (!z) return;
+    els.refZoom.dataset.tipo = String(z.r.seg.kind || "");
+    els.refZoom.classList.toggle("ref-error", z.r.card.classList.contains("ref-error"));
+    els.refZoomLabel.textContent = TPCore.refEtiqueta(z.r.seg);
+    els.refZoomBody.replaceChildren(...Array.from(z.r.body.childNodes, (n) => n.cloneNode(true)));
+  }
+
+  function closeZoom() {
+    const z = state.zoom;
+    if (!z) return;
+    clearTimeout(z.timer);
+    state.zoom = null;
+    els.refZoom.classList.add("hidden");
+    els.refZoomBody.replaceChildren();
+    updateRefChip();
+    updateUI();
+    sendEstado(true);
   }
 
   // ===== Preferencias (lectura, fondo, avance, frenos) =====
@@ -1322,7 +1552,10 @@
     b.dataset.halo = prefs.halo ? "on" : "off";
     b.dataset.texto = prefs.texto;
     b.dataset.espejo = prefs.espejo ? "on" : "off";
+    b.dataset.vista = prefs.vista;
     const root = document.documentElement.style;
+    root.setProperty("--tp-ref-pct", String(TPCore.REF_TAMANOS[prefs.ref_tam]));
+    root.setProperty("--tp-ref-opacidad", String(prefs.ref_opacidad / 100));
     root.setProperty("--tp-fondo-alfa", String(prefs.fondo_pct / 100));
     root.setProperty("--tp-escala", String(TPCore.escalaLetra(prefs.letra)));
     root.setProperty("--tp-interlineado", String(prefs.interlineado));
@@ -1347,6 +1580,13 @@
     for (const btn of document.querySelectorAll(".segmentado [data-modo]")) {
       btn.setAttribute("aria-pressed", String(btn.dataset.modo === prefs.avance));
     }
+    for (const btn of document.querySelectorAll(".segmentado [data-vista]")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.vista === prefs.vista));
+    }
+    for (const btn of document.querySelectorAll(".segmentado [data-reftam]")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.reftam === prefs.ref_tam));
+    }
+    setRange(els.refOpacidad, prefs.ref_opacidad, els.refOpacidadLabel, `${prefs.ref_opacidad} %`);
     const notas = {
       manual: "Velocidad constante; el micrófono no interviene.",
       asistido: "Avanza a tu velocidad fija; si callas más que la pausa, se detiene y sigue al volver a hablar.",
@@ -1355,6 +1595,9 @@
     els.modoNota.textContent = notas[prefs.avance];
     applyNativeBackdrop();
     measureLine();
+    layoutRefs();
+    loadAllRefs();
+    updateRefChip();
     savePrefs();
     state.lastLineTop = null;
     recenterSoon();
@@ -1532,6 +1775,10 @@
       adelante: native.available ? native.topmost : null,
       guion: state.script ? state.scriptName : null,
       cuenta: state.countdown,
+      // Hito 85 (R5)
+      vista: prefs.vista,
+      ref_actual: nearRef() ? nearRef().seg.label || null : null,
+      ref_ampliada: !!state.zoom,
     };
   }
 
@@ -1599,6 +1846,7 @@
       case "lock": setStealth(!native.locked); break;
       case "topmost": setTopmost(!native.topmost); break;
       case "countdown": startCountdown(value); break;
+      case "ref_zoom": toggleZoom(); break;   // hito 85 (R5); «view» va por aplicarOrdenPrefs
       default: break;
     }
     updateUI();
@@ -1710,6 +1958,21 @@
       setAvance(btn.dataset.modo);
     });
   }
+  for (const btn of document.querySelectorAll(".segmentado [data-vista]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.currentTarget.blur();
+      prefs = { ...prefs, vista: btn.dataset.vista };
+      applyPrefs();
+    });
+  }
+  for (const btn of document.querySelectorAll(".segmentado [data-reftam]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.currentTarget.blur();
+      prefs = { ...prefs, ref_tam: btn.dataset.reftam };
+      applyPrefs();
+    });
+  }
+  onRange(els.refOpacidad, (v) => { prefs = { ...prefs, ref_opacidad: v }; });
   els.btnPreajuste.addEventListener("click", () => { prefs = TPCore.preajustePresentacion(prefs); applyPrefs(); });
   els.btnLoad.addEventListener("click", loadFromTextarea);
   els.selGuion.addEventListener("change", openFromList);
@@ -1718,6 +1981,7 @@
   window.addEventListener("resize", () => {
     state.lastLineTop = null;
     measureLine();
+    layoutRefs();
     recenterSoon();
   });
 
@@ -1906,6 +2170,15 @@
       case "O":
         toggleBackdrop();
         break;
+      case "v":
+      case "V":
+        prefs = TPCore.aplicarOrdenPrefs(prefs, "view", "siguiente");
+        applyPrefs();
+        break;
+      case "z":
+      case "Z":
+        toggleZoom();
+        break;
       default:
         break;
     }
@@ -1914,7 +2187,16 @@
   document.addEventListener("keydown", onKeyDown);
 
   // Solo lectura, para depurar y para las pruebas de extremo a extremo.
-  window.TPDebug = Object.freeze({ state: () => state, prefs: () => prefs, lineStarts });
+  window.TPDebug = Object.freeze({
+    state: () => state, prefs: () => prefs, lineStarts,
+    // Hito 85: lo que muestra cada tarjeta (medido en el DOM, no en los segmentos).
+    refs: () => state.refs.map((r) => ({
+      at: r.at, kind: r.seg.kind, label: r.seg.label, estado: r.state,
+      error: r.card.classList.contains("ref-error") ? r.body.textContent : null,
+      img: !!r.body.querySelector("img"), codigo: !!r.body.querySelector("pre.ref-codigo"),
+      visible: r.card.getBoundingClientRect().width > 0, top: r.card.offsetTop,
+    })),
+  });
 
   // Inicialización
   prefs = loadPrefs();

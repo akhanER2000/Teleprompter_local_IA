@@ -358,6 +358,64 @@ body[data-halo="on"] .preview-sample .w {
 }
 .cuenta-num { font-size: clamp(64px, 22vmin, 260px); font-weight: 700; color: var(--accent); text-shadow: 0 0 2px #000, 0 0 12px #000; }
 
+/* ===== Referencias (hito 85) =====
+   Tarjetas absolutas dentro de script-view (se desplazan con el texto). Con la vista
+   «Con referencias» el texto deja libre la columna derecha: la tarjeta va al costado
+   de su renglón y nunca tapa lo que se lee. app.js escribe --tp-ref-pct (15, 25 o 35)
+   y --tp-ref-opacidad (0,4..1); `top` de cada tarjeta lo calcula layoutRefs(). */
+:root {
+  --tp-ref-pct: 25;
+  --tp-ref-opacidad: 1;
+  --tp-ref-ancho: clamp(96px, calc(var(--tp-ref-pct) * 1vw), 560px);
+  --tp-ref-hueco: clamp(12px, 2vw, 28px);
+}
+body[data-vista="referencias"] .script-view {
+  padding-right: calc(var(--tp-margen) + var(--tp-ref-ancho) + var(--tp-ref-hueco));
+}
+.script-view > .ref-card {
+  display: none;
+  position: absolute;
+  right: var(--tp-margen);
+  width: var(--tp-ref-ancho);
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 400;
+  text-shadow: none;
+  opacity: var(--tp-ref-opacidad);
+  overflow: hidden;
+}
+body[data-vista="referencias"] .script-view > .ref-card { display: block; }
+.ref-etiqueta {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ref-cuerpo img { display: block; width: 100%; height: auto; max-height: 60vh; object-fit: contain; }
+.ref-codigo {
+  margin: 0;
+  white-space: pre;
+  overflow: hidden;
+  max-height: 40vh;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.ref-zoom {
+  position: absolute;
+  inset: 6% 8%;
+  margin: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ref-zoom .ref-cuerpo { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; overflow: hidden; }
+.ref-zoom .ref-cuerpo img { width: 100%; height: 100%; max-height: none; object-fit: contain; }
+.ref-zoom .ref-codigo { max-height: none; font-size: clamp(13px, 1.8vw, 22px); justify-self: stretch; align-self: start; }
+
 @media (prefers-reduced-motion: reduce) {
   .script-view .w { transition: none; }
 }

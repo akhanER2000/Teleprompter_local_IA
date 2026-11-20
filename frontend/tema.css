@@ -426,3 +426,56 @@ kbd {
 #overlay-topmost { color: var(--tp-oro-claro); text-shadow: none; }
 #overlay-stealth { color: var(--tp-error); text-shadow: none; }
 #overlay-sync[data-sync="resynced"] { color: var(--tp-ok); }
+
+/* ===== Referencias (hito 85, R3): tarjeta con borde de oro fino y su etiqueta ===== */
+.script-view > .ref-card,
+.ref-zoom {
+  background: rgb(var(--tp-lectura-fondo-rgb) / 0.92);
+  border: 1px solid var(--tp-oro);
+  border-radius: 8px;
+  padding: 6px;
+  font-family: var(--tp-fuente-ui);
+  color: var(--tp-ui-1);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.45);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.ref-etiqueta {
+  color: var(--tp-oro-claro);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 0 2px 5px;
+}
+.ref-cuerpo img { border-radius: 4px; }
+/* Anuncio previo: la que viene se enciende antes de llegar; la leída se apaga. */
+.script-view > .ref-card.ref-proxima {
+  border-color: var(--tp-oro-claro);
+  box-shadow: 0 0 0 2px rgb(242 216 140 / 0.35), 0 4px 18px rgb(0 0 0 / 0.45);
+}
+.script-view > .ref-card.ref-proxima .ref-etiqueta::before { content: "▸ "; }
+.script-view > .ref-card.ref-actual { border-color: var(--tp-oro-claro); }
+.script-view > .ref-card.ref-leida { border-color: var(--tp-oro-oscuro); filter: saturate(0.6) brightness(0.8); }
+.script-view > .ref-card[data-tipo="nota"] .ref-cuerpo {
+  color: var(--tp-oro-palido);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 2px 2px 4px;
+}
+.ref-cargando .ref-cuerpo { color: var(--tp-ui-3); }
+/* Sin archivo: grafito, y la lectura sigue. */
+.ref-card.ref-error, .ref-zoom.ref-error { border-color: var(--tp-grafito); }
+.ref-card.ref-error .ref-etiqueta, .ref-zoom.ref-error .ref-etiqueta,
+.ref-card.ref-error .ref-cuerpo, .ref-zoom.ref-error .ref-cuerpo { color: var(--tp-grafito); }
+.ref-zoom { border-width: 2px; padding: 12px; background: rgb(var(--tp-lectura-fondo-rgb) / 0.96); }
+.ref-zoom .ref-etiqueta { font-size: 14px; }
+.ref-zoom[data-tipo="nota"] .ref-cuerpo { color: var(--tp-oro-palido); font-size: clamp(22px, 4vw, 48px); font-weight: 600; text-align: center; }
+
+/* Código: colores propios (Pygments, clases c-*), sin CDN. */
+.ref-codigo { font-family: var(--tp-fuente-mono); color: var(--tp-ui-1); background: var(--tp-campo); border-radius: 4px; padding: 6px 8px; }
+.ref-codigo .c-k, .ref-codigo .c-kd, .ref-codigo .c-kn, .ref-codigo .c-kc, .ref-codigo .c-kr, .ref-codigo .c-ow { color: var(--tp-oro); }
+.ref-codigo .c-s, .ref-codigo .c-s1, .ref-codigo .c-s2, .ref-codigo .c-sd, .ref-codigo .c-sa, .ref-codigo .c-si, .ref-codigo .c-se { color: #A9C99B; }
+.ref-codigo .c-c, .ref-codigo .c-c1, .ref-codigo .c-cm, .ref-codigo .c-ch, .ref-codigo .c-cs { color: var(--tp-grafito); font-style: italic; }
+.ref-codigo .c-m, .ref-codigo .c-mi, .ref-codigo .c-mf, .ref-codigo .c-mh { color: #E0A84A; }
+.ref-codigo .c-nf, .ref-codigo .c-fm, .ref-codigo .c-nc, .ref-codigo .c-nd { color: var(--tp-oro-claro); }
+.ref-codigo .c-nb, .ref-codigo .c-bp { color: #9FB8D0; }
+.ref-codigo .c-o, .ref-codigo .c-p { color: var(--tp-ui-2); }

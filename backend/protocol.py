@@ -340,6 +340,8 @@ def encode(msg: dict) -> str:
 CONTROL_VERSION = 1
 CONTROL_MAX_BYTES = 4096
 CONTROL_MODES = ("manual", "asistido", "voz", "siguiente")
+# Hito 85 (R5): se suman a T6 sin cambiar lo que existe.
+CONTROL_VIEWS = ("texto", "referencias", "siguiente")
 
 
 @dataclass(frozen=True)
@@ -383,6 +385,12 @@ def _ctl_mode(cmd: str, value: Any) -> str:
     return value
 
 
+def _ctl_view(cmd: str, value: Any) -> str:
+    if not isinstance(value, str) or value not in CONTROL_VIEWS:
+        raise ProtocolError("'value' de 'view' debe ser texto, referencias o siguiente.")
+    return value
+
+
 def _ctl_backdrop(cmd: str, value: Any) -> int:
     return _ctl_int(value, -100, 100, cmd, nonzero=True)
 
@@ -410,6 +418,7 @@ _CONTROL_PARSERS = {
     "backdrop": _ctl_backdrop, "band": _ctl_none, "halo": _ctl_none,
     "lock": _ctl_none, "topmost": _ctl_none, "countdown": _ctl_countdown,
     "open_script": _ctl_open_script,
+    "view": _ctl_view, "ref_zoom": _ctl_none,   # hito 85 (R5)
 }
 CONTROL_CMDS = frozenset(_CONTROL_PARSERS)
 
@@ -449,8 +458,10 @@ def control_error_msg(message: str, code: str = "BAD_REQUEST") -> dict:
 # Campos del estado (app -> control), en el orden del contrato.
 ESTADO_FIELDS = ("corriendo", "modo", "velocidad", "ppm", "progreso", "transcurrido_s",
                  "restante_s", "seccion", "seccion_idx", "secciones", "letra", "espejo",
-                 "fondo_pct", "banda", "halo", "bloqueado", "adelante", "guion", "cuenta")
+                 "fondo_pct", "banda", "halo", "bloqueado", "adelante", "guion", "cuenta",
+                 "vista", "ref_actual", "ref_ampliada")   # las tres últimas: hito 85 (R5)
 _ESTADO_MODES = frozenset({"manual", "asistido", "voz"})
+_ESTADO_VISTAS = frozenset({"texto", "referencias"})
 
 
 def _num(value: Any, lo: float, hi: float | None = None) -> float | None:
@@ -483,6 +494,7 @@ def _flag(value: Any) -> bool | None:
 def sanitize_estado(raw: dict) -> dict:
     """Toma del visor solo los campos del contrato; un valor inválido queda en None (sin dato)."""
     modo = raw.get("modo")
+    vista = raw.get("vista")
     return {
         "corriendo": _flag(raw.get("corriendo")),
         "modo": modo if isinstance(modo, str) and modo in _ESTADO_MODES else None,
@@ -503,6 +515,9 @@ def sanitize_estado(raw: dict) -> dict:
         "adelante": _flag(raw.get("adelante")),
         "guion": _text(raw.get("guion"), 120),
         "cuenta": _int_or_none(raw.get("cuenta"), 0, 30),
+        "vista": vista if isinstance(vista, str) and vista in _ESTADO_VISTAS else None,
+        "ref_actual": _text(raw.get("ref_actual")),
+        "ref_ampliada": _flag(raw.get("ref_ampliada")),
     }
 
 
