@@ -4,91 +4,185 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Teleprompter Local IA</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <!-- 100 % local: ninguna fuente ni recurso externo. -->
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/tema.css" />
 </head>
-<body class="mode-setup">
+<body class="mode-setup" data-modo="manual" data-marcha="pausa" data-banda="off" data-halo="off" data-texto="marfil">
   <!-- Avisos visibles en setup y en lectura (conexión, modelo, errores del backend) -->
   <div id="notices" class="notices" aria-live="polite"></div>
 
   <div id="setup" class="panel">
-    <h1>Teleprompter Local IA</h1>
-    <p class="status" id="status">Conectando...</p>
+    <header class="panel-cabecera">
+      <div class="panel-marca">
+        <h1>Teleprompter</h1>
+        <span class="panel-sub">100 % local · sin red</span>
+      </div>
+      <p class="status" id="status">Conectando…</p>
+      <div class="panel-acciones">
+        <button id="btn-fullscreen" type="button" class="btn-secundario">Pantalla completa</button>
+        <button id="btn-auto" type="button" class="btn-primario" disabled>Empezar a leer</button>
+      </div>
+    </header>
 
-    <label for="script">Pega tu guion:</label>
-    <textarea id="script" rows="10" placeholder="Pega aquí el guion completo...&#10;&#10;Deja una línea en blanco entre párrafos.&#10;Usa [corchetes] para directivas de escena: no se leen en voz alta."></textarea>
+    <div class="panel-cuerpo">
+      <section class="panel-seccion" aria-labelledby="t-guion">
+        <h2 class="panel-titulo" id="t-guion">Guion</h2>
+        <div class="campo campo-col">
+          <label for="sel-guion">Abrir de guiones/</label>
+          <select id="sel-guion"><option value="">Elige un guion…</option></select>
+        </div>
+        <label for="script" class="campo-etiqueta">O pégalo aquí</label>
+        <textarea id="script" rows="10" placeholder="Pega aquí el guion completo…&#10;&#10;Deja una línea en blanco entre párrafos.&#10;Usa [corchetes] para secciones y directivas: no se leen en voz alta."></textarea>
+        <p class="hint">Una línea en blanco separa párrafos. [Corchetes]: secciones, no se leen.</p>
+        <button id="btn-load" type="button" class="btn-secundario">Cargar guion</button>
+      </section>
 
-    <div class="row">
-      <label for="font-size">Tamaño: <span id="font-size-label">64</span> px</label>
-      <input type="range" id="font-size" min="32" max="120" value="64" />
+      <section class="panel-seccion" aria-labelledby="t-lectura">
+        <h2 class="panel-titulo" id="t-lectura">Lectura</h2>
+        <div class="campo">
+          <label for="letra">Tamaño de letra</label>
+          <output id="letra-label" for="letra">1,0×</output>
+          <input type="range" id="letra" min="1" max="20" step="1" value="8" />
+        </div>
+        <div class="campo">
+          <label for="line-height">Interlineado</label>
+          <output id="line-height-label" for="line-height">1,45</output>
+          <input type="range" id="line-height" min="1" max="2.5" step="0.05" value="1.45" />
+        </div>
+        <div class="campo campo-col">
+          <span class="campo-etiqueta" id="t-color">Color del texto</span>
+          <div class="colores" role="group" aria-labelledby="t-color">
+            <button type="button" class="muestra-color" data-color="blanco" aria-pressed="false">Aa <span>Blanco</span></button>
+            <button type="button" class="muestra-color" data-color="marfil" aria-pressed="true">Aa <span>Marfil</span></button>
+            <button type="button" class="muestra-color" data-color="oro" aria-pressed="false">Aa <span>Oro</span></button>
+          </div>
+        </div>
+
+        <h2 class="panel-titulo" id="t-fondo">Fondo</h2>
+        <div class="campo">
+          <label for="fondo">Fondo</label>
+          <output id="fondo-label" for="fondo">100 %</output>
+          <input type="range" id="fondo" min="0" max="100" step="5" value="100" />
+        </div>
+        <p class="hint" id="fondo-nota"></p>
+        <div class="campo">
+          <label for="chk-banda">Banda de lectura <small>Franja oscura detrás de las líneas actuales</small></label>
+          <input type="checkbox" class="interruptor" id="chk-banda" />
+        </div>
+        <div class="campo">
+          <label for="chk-halo">Halo <small>Contorno oscuro en cada letra</small></label>
+          <input type="checkbox" class="interruptor" id="chk-halo" />
+        </div>
+        <button id="btn-preajuste" type="button" class="preajuste">Sobre presentación <small>Banda + halo + fondo al 0 %</small></button>
+        <button id="btn-preview" type="button" class="btn-secundario" title="Muestra unos segundos cómo se ve la lectura">Vista previa</button>
+      </section>
+
+      <section class="panel-seccion" aria-labelledby="t-avance">
+        <h2 class="panel-titulo" id="t-avance">Avance</h2>
+        <div class="segmentado" id="seg-modo" role="group" aria-label="Modo de avance">
+          <button type="button" data-modo="manual" aria-pressed="true">Manual</button>
+          <button type="button" data-modo="asistido" aria-pressed="false">Asistido</button>
+          <button type="button" data-modo="voz" aria-pressed="false">Voz</button>
+        </div>
+        <p class="hint" id="modo-nota"></p>
+        <div class="campo">
+          <label for="velocidad">Velocidad</label>
+          <output id="velocidad-label" for="velocidad">6 · 180 ppm</output>
+          <input type="range" id="velocidad" min="1" max="20" step="1" value="6" />
+        </div>
+        <div class="campo">
+          <label for="pausa-asistido">Asistido: pausa tras silencio</label>
+          <output id="pausa-asistido-label" for="pausa-asistido">1,5 s</output>
+          <input type="range" id="pausa-asistido" min="0.5" max="5" step="0.5" value="1.5" />
+        </div>
+
+        <h3 class="panel-titulo panel-titulo-menor">Frenos de Voz</h3>
+        <div class="campo">
+          <label for="freno-confirmar">Confirmar con</label>
+          <output id="freno-confirmar-label" for="freno-confirmar">3 palabras</output>
+          <input type="range" id="freno-confirmar" min="1" max="10" step="1" value="3" />
+        </div>
+        <div class="campo">
+          <label for="freno-adelanto">Adelanto máximo</label>
+          <output id="freno-adelanto-label" for="freno-adelanto">6 palabras</output>
+          <input type="range" id="freno-adelanto" min="1" max="30" step="1" value="6" />
+        </div>
+        <div class="campo">
+          <label for="freno-velmax">Velocidad máxima</label>
+          <output id="freno-velmax-label" for="freno-velmax">4,5 pal/s</output>
+          <input type="range" id="freno-velmax" min="0.5" max="10" step="0.5" value="4.5" />
+        </div>
+        <div class="campo">
+          <label for="chk-frase">No terminar frases no dichas</label>
+          <input type="checkbox" class="interruptor" id="chk-frase" checked />
+        </div>
+
+        <h3 class="panel-titulo panel-titulo-menor">Ventana</h3>
+        <div class="campo">
+          <label for="chk-espejo">Espejo</label>
+          <input type="checkbox" class="interruptor" id="chk-espejo" />
+        </div>
+        <div class="campo nativo hidden">
+          <label for="chk-topmost">Siempre adelante</label>
+          <input type="checkbox" class="interruptor" id="chk-topmost" />
+        </div>
+        <div class="campo nativo hidden">
+          <label for="chk-stealth">Invisible en capturas</label>
+          <input type="checkbox" class="interruptor" id="chk-stealth" checked />
+        </div>
+      </section>
     </div>
 
-    <div class="row">
-      <label for="line-height">Interlineado: <span id="line-height-label">1.6</span></label>
-      <input type="range" id="line-height" min="1" max="2.5" step="0.05" value="1.6" />
-    </div>
-
-    <div class="row">
-      <label for="auto-speed">Velocidad auto-scroll: <span id="auto-speed-label">3</span></label>
-      <input type="range" id="auto-speed" min="1" max="10" step="0.5" value="3" />
-    </div>
-
-    <div class="row hidden" id="row-opacity">
-      <label for="opacity">Transparencia de la ventana: <span id="opacity-label">0</span> %</label>
-      <input type="range" id="opacity" min="0" max="70" step="5" value="0" />
-      <button id="btn-preview" type="button" title="Muestra unos segundos cómo se ve el modo lectura">👁 Vista previa</button>
-    </div>
-
-    <div class="buttons">
-      <button id="btn-load">Cargar guion</button>
-      <button id="btn-start" disabled>🎙 Manos libres</button>
-      <button id="btn-auto" disabled>▶ Auto-scroll</button>
-      <button id="btn-pause" disabled>⏸ Pausar</button>
-      <button id="btn-reset" disabled>⏮ Reiniciar</button>
-      <button id="btn-fullscreen">⛶ Pantalla completa</button>
-      <button id="btn-stealth" class="hidden">🛡 Stealth: BLOQUEADO</button>
-      <button id="btn-topmost" class="hidden">📌 Siempre adelante: OFF</button>
-    </div>
-
-    <p class="hint">
-      Atajos: <kbd>Espacio</kbd> iniciar/pausar (voz si está disponible) &middot;
-      <kbd>A</kbd> auto-scroll sí/no &middot;
-      <kbd>↑</kbd><kbd>↓</kbd> velocidad del auto-scroll &middot;
-      <kbd>←</kbd><kbd>→</kbd> retroceder/avanzar 5 palabras (<kbd>Shift</kbd>: 15) &middot;
-      <kbd>R</kbd> volver al inicio &middot;
-      <kbd>Esc</kbd> volver al setup &middot;
-      <kbd>F11</kbd> pantalla completa &middot;
-      <kbd>L</kbd> alternar stealth (invisible en capturas, app nativa) &middot;
-      <kbd>T</kbd> alternar siempre adelante (app nativa) &middot;
-      <kbd>O</kbd> transparencia sí/no (app nativa)
-    </p>
+    <footer class="hint atajos">
+      <span><kbd>Espacio</kbd> leer o pausar</span>
+      <span><kbd>M</kbd> modo</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> velocidad</span>
+      <span><kbd>←</kbd><kbd>→</kbd> mover (<kbd>Shift</kbd>: más)</span>
+      <span><kbd>A</kbd> manual sí/no</span>
+      <span><kbd>R</kbd> inicio</span>
+      <span><kbd>Esc</kbd> configuración</span>
+      <span><kbd>F11</kbd> pantalla completa</span>
+      <span class="nativo hidden"><kbd>L</kbd> invisible en capturas</span>
+      <span class="nativo hidden"><kbd>T</kbd> siempre adelante</span>
+      <span><kbd>O</kbd> fondo sí/no</span>
+    </footer>
   </div>
 
   <div id="reader" class="reader">
-    <div class="reticle"></div>
-    <div id="script-view" class="script-view"></div>
-    <div id="preview-sample" class="preview-sample hidden">
-      <p><span class="w read">Así</span> <span class="w read">se</span> <span class="w read">verá</span> <span class="w current">el</span> <span class="w upcoming">texto</span> <span class="w upcoming">de</span> <span class="w upcoming">tu</span> <span class="w upcoming">teleprompter</span> <span class="w upcoming">con</span> <span class="w upcoming">esta</span> <span class="w upcoming">transparencia.</span> <span class="w upcoming">Lo</span> <span class="w upcoming">que</span> <span class="w upcoming">haya</span> <span class="w upcoming">detrás</span> <span class="w upcoming">de</span> <span class="w upcoming">la</span> <span class="w upcoming">ventana</span> <span class="w upcoming">se</span> <span class="w upcoming">alcanza</span> <span class="w upcoming">a</span> <span class="w upcoming">ver.</span></p>
+    <div class="barra" id="barra">
+      <div class="barra-modo segmentado" role="group" aria-label="Modo de avance">
+        <button type="button" data-modo="manual" aria-pressed="true">Manual</button>
+        <button type="button" data-modo="asistido" aria-pressed="false">Asistido</button>
+        <button type="button" data-modo="voz" aria-pressed="false">Voz</button>
+      </div>
+      <span class="barra-marcha" id="barra-marcha">En pausa</span>
+      <span class="chips">
+        <span class="chip" id="chip-conn" data-nivel="aviso">Conectando…</span>
+        <span class="chip hidden" id="chip-model" data-nivel="aviso"></span>
+        <span class="chip hidden" id="chip-sync" data-nivel="aviso"></span>
+        <span class="chip hidden" id="chip-stealth" data-nivel="ok">Invisible</span>
+        <span class="chip hidden" id="chip-topmost" data-nivel="ok">Adelante</span>
+        <span class="chip hidden" id="chip-stats" data-nivel="ok"></span>
+      </span>
+      <span class="barra-seccion" id="barra-seccion"></span>
+      <span class="barra-velocidad" id="barra-velocidad">vel 6 · 180 ppm</span>
+      <span class="barra-tiempo" id="barra-tiempo">—</span>
+      <div class="barra-progreso" aria-hidden="true"><div class="barra-progreso-relleno"></div></div>
+    </div>
+    <div class="lectura-area" id="lectura-area">
+      <div class="banda-lectura" id="banda"></div>
+      <div class="reticle"></div>
+      <div id="script-view" class="script-view"></div>
+      <div id="preview-sample" class="preview-sample hidden">
+        <p><span class="w read">Así</span> <span class="w read">se</span> <span class="w read">verá</span> <span class="w current">el</span> <span class="w upcoming">texto</span> <span class="w upcoming">de</span> <span class="w upcoming">tu</span> <span class="w upcoming">teleprompter</span> <span class="w upcoming">con</span> <span class="w upcoming">este</span> <span class="w upcoming">fondo.</span> <span class="w upcoming">Lo</span> <span class="w upcoming">que</span> <span class="w upcoming">haya</span> <span class="w upcoming">detrás</span> <span class="w upcoming">se</span> <span class="w upcoming">alcanza</span> <span class="w upcoming">a</span> <span class="w upcoming">ver.</span></p>
+      </div>
     </div>
     <div id="preview-banner" class="preview-banner hidden"></div>
-    <div class="overlay">
-      <span id="overlay-mode">--</span>
-      <span id="overlay-status">●</span>
-      <span id="overlay-sync" class="hidden"></span>
-      <span id="overlay-conn" class="ind">Conectando…</span>
-      <span id="overlay-model" class="ind">Modelo --</span>
-      <span id="overlay-stealth" class="hidden">🛡 STEALTH</span>
-      <span id="overlay-topmost" class="hidden">📌 ADELANTE</span>
-      <span id="overlay-opacity" class="hidden">◐ --</span>
-      <span id="overlay-lag">lag -- ms</span>
-      <span id="overlay-stt">stt -- ms</span>
-      <span id="overlay-conf">conf --</span>
-      <span id="overlay-speed" class="hidden">vel --</span>
-    </div>
+    <div class="cuenta-atras hidden" id="cuenta" aria-live="assertive"><span class="cuenta-num" id="cuenta-num"></span></div>
   </div>
 
+  <script src="/static/core.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

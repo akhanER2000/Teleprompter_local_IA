@@ -84,6 +84,12 @@ class MatchResult:
     matched_word: str | None   # texto del último token alineado
     resync: bool = False       # salto por resincronización (Fase 2)
     desync: bool = False       # el matcher está desincronizado (Fase 2)
+    # Hito 84 (frenos de Voz): lo que de verdad se alineó en esta llamada.
+    # `aligned_idx` = último token alineado + 1 (sin el tope `max_advance`;
+    # None si no hubo alineamiento aceptable) y `run` = palabras seguidas
+    # alineadas al final del alineamiento (sin huecos ni sustituciones).
+    aligned_idx: int | None = None
+    run: int = 0
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,20 @@ class Alignment:
     max_consecutive_content: int = 0
     word_end: int = -1     # índice en words de la última palabra alineada (-1: ninguna)
     unit_end: int = -1     # índice en units de la última unidad alineada (-1: ninguna)
+
+    @property
+    def tail_run(self) -> int:
+        """Palabras alineadas seguidas (stopwords incluidas) que cierran el alineamiento."""
+        pairs = self.pairs
+        if not pairs:
+            return 0
+        n = 1
+        for k in range(len(pairs) - 1, 0, -1):
+            (wa, ua), (wb, ub) = pairs[k - 1], pairs[k]
+            if (wb - wa, ub - ua) != (1, 1):
+                break
+            n += 1
+        return n
 
 
 # ---------------------------------------------------------------- alineamiento
@@ -475,7 +495,9 @@ class ScriptMatcher:
                 self._stall = 0
                 self._desync = False
                 return MatchResult(new_idx, new_idx > cur, _conf(aln.score, best_possible),
-                                   self._tokens[last_tok].text)
+                                   self._tokens[last_tok].text,
+                                   aligned_idx=self._skip_unitless(last_tok + 1),
+                                   run=aln.tail_run)
 
             self._stall += 1
             if self._stall >= self.params["stall_cycles"]:
@@ -553,9 +575,10 @@ class ScriptMatcher:
         conf = _conf(aln.score, best_possible)
         word = self._tokens[last_tok].text
         if target == cur:  # ya estaba ahí: solo vuelve a la sincronía
-            return MatchResult(cur, False, conf, word)
+            return MatchResult(cur, False, conf, word, aligned_idx=target, run=aln.tail_run)
         self._idx = target
-        return MatchResult(target, target > cur, conf, word, resync=True)
+        return MatchResult(target, target > cur, conf, word, resync=True,
+                           aligned_idx=target, run=aln.tail_run)
 
 
 def _conf(score: float, best_possible: float) -> float:

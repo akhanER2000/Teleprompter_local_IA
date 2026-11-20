@@ -459,7 +459,9 @@ def test_directivas_en_dialogo_quedan_actuales() -> None:
     assert [p.tokens[s["at_idx"]].text for s in dirs] == ["Hola,", "y"]
     m = ScriptMatcher(p.tokens)
     seen = {s["text"]: set() for s in dirs}
-    for spoken in ("buenos dias", "a todos", "hola que", "tal", "y ahora", "los datos"):
+    # Ventanas solapadas, como en vivo (matcher v2: cada ciclo repite la cola anterior).
+    for spoken in ("buenos dias", "buenos dias a todos", "dias a todos hola que",
+                   "a todos hola que tal", "hola que tal y ahora", "que tal y ahora los datos"):
         cur = m.update(to_units(spoken)).new_idx
         for s in dirs:
             state = "read" if cur > s["at_idx"] else "current" if cur == s["at_idx"] else "upcoming"

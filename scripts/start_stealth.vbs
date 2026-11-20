@@ -15,12 +15,12 @@ Set fso   = CreateObject("Scripting.FileSystemObject")
 
 scriptDir   = fso.GetParentFolderName(WScript.ScriptFullName)
 projectRoot = fso.GetParentFolderName(scriptDir)
-pythonw     = projectRoot & "\.venv\Scripts\pythonw.exe"
+pythonw     = projectRoot & "\.venv312\Scripts\pythonw.exe"   ' hito 84: el .venv viejo esta roto
 launcher    = projectRoot & "\launch.py"
 
 If Not fso.FileExists(pythonw) Then
     MsgBox "Entorno virtual no encontrado." & vbCrLf & _
-           "Ejecuta scripts\install.bat primero.", _
+           "Falta .venv312 (ver CLAUDE.md).", _
            vbCritical, "Teleprompter"
     WScript.Quit 1
 End If

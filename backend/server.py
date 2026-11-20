@@ -21,16 +21,19 @@ from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import HTTPException
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from backend.config import FRONTEND_DIR, Settings, load_settings
+from backend.config import FRONTEND_DIR, SCRIPTS_DIR, Settings, load_settings
 from backend.fakes import FakeAudioSource, FakeSTTEngine, FakeVadGate
 from backend.protocol import (
-    Hello, LoadScript, Pause, ProtocolError, SetPosition, Start, echo_scroll_msg, encode,
-    parse_client_message, script_loaded_msg, state_msg, status_msg,
+    ControlCmd, Estado, Hello, LoadScript, Pause, ProtocolError, SetPosition, Start,
+    control_error_msg, control_forward_msg, echo_scroll_msg, encode, estado_control_msg,
+    parse_client_message, parse_control_message, script_loaded_msg, state_msg, status_msg,
 )
 from backend.voice import LISTENING_MESSAGE, SAMPLE_RATE, VAD_TAIL_S, VoiceLoop
+from tools.voice_brakes import BrakeParams
 from tools.script_matcher import ScriptMatcher
 from tools.script_parser import ParsedScript, parse_script
 
@@ -40,6 +43,9 @@ CLOSE_REPLACED = 4000      # el cliente no reintenta: "Abierto en otra ventana"
 CLOSE_GOING_AWAY = 1001
 CLOSE_INTERNAL_ERROR = 1011  # falló un envío: el cliente reconecta y se resincroniza
 BG_TIMEOUT_S = 5.0
+CLOSE_POLICY = 1008          # /control: origen no permitido
+ESTADO_PERIOD_S = 1.0        # /control: el estado se difunde al cambiar y cada segundo
+
 
 SttFactory = Callable[[Settings], Any]
 AudioFactory = Callable[[Settings], Any]
@@ -100,7 +106,7 @@ class Outbox:
     descarta lo pendiente y pide al emisor que cierre el socket.
     """
 
-    COALESCED = frozenset({"scroll", "level"})
+    COALESCED = frozenset({"scroll", "level", "activity", "estado"})
     MAX_PENDING = 256  # cliente que no lee: se pierde primero lo prescindible
 
     def __init__(self) -> None:
@@ -241,7 +247,11 @@ class Session:
         self.device_in_use = settings.device
         self.cuda_fallback = False
         self.script: ParsedScript | None = None
+        self.script_name: str | None = None   # nombre en guiones/ si vino de open_script
         self.matcher = ScriptMatcher()
+        # Hito 84 (T6): controles conectados a /control y último estado del visor.
+        self.controls: set[Connection] = set()
+        self.estado: dict | None = None
         self.epoch = 0         # último `seq` adoptado; va en cada scroll
         self.generation = 0    # sube en cada reposicionamiento (aunque falte `seq`)
         self.voice: VoiceLoop | None = None
@@ -253,6 +263,7 @@ class Session:
         self._start_lock = asyncio.Lock()      # un start a la vez abre la fuente
         self._stopping: set[asyncio.Task] = set()  # detenciones de bucles en curso
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._voice_brakes: BrakeParams | None = None
         self._closed = False
         self._bg: set[asyncio.Task] = set()
 
@@ -267,14 +278,22 @@ class Session:
             device=self.device_in_use, listening=self.listening,
             script_id=script.script_id if script else None,
             total_tokens=script.total_tokens if script else 0,
-            current_idx=self.matcher.current_idx if script else 0,
+            current_idx=self.shown_idx() if script else 0,
             epoch=self.epoch, debug=self.settings.debug)
+
+    def shown_idx(self) -> int:
+        """Posición que ve el lector: la de los frenos en Voz, si no la del matcher."""
+        voice = self.voice
+        if voice is not None and voice.brakes is not None:
+            return voice.brakes.displayed
+        return self.matcher.current_idx
 
     def script_loaded(self) -> dict:
         assert self.script is not None
         return script_loaded_msg(
             script_id=self.script.script_id, total_tokens=self.script.total_tokens,
-            epoch=self.epoch, text=self.script.text, segments=self.script.segments)
+            epoch=self.epoch, text=self.script.text, segments=self.script.segments,
+            name=self.script_name)
 
     def send(self, msg: dict) -> None:
         """Envía al cliente activo, si hay uno."""
@@ -394,6 +413,86 @@ class Session:
         self.conn = None
         if self._halt_listening() is not None:
             log.info("Escucha detenida: el cliente se desconectó.")
+        self.broadcast_estado()   # los controles ven "conectado: false"
+
+    # ------------------------------------------------------------ /control (T6)
+
+    def viewer_connected(self) -> bool:
+        conn = self.conn
+        return conn is not None and not conn.closed and not self._closed
+
+    def estado_msg(self) -> dict:
+        return estado_control_msg(self.estado, conectado=self.viewer_connected())
+
+    def broadcast_estado(self) -> None:
+        if not self.controls:
+            return
+        msg = self.estado_msg()
+        for ctl in list(self.controls):
+            ctl.send(msg)
+
+    async def attach_control(self, conn: Connection) -> None:
+        conn.start()
+        if self._closed:
+            conn.close(CLOSE_GOING_AWAY, "servidor detenido")
+            return
+        self.controls.add(conn)
+        log.info("Control %d conectado (%d en total).", conn.id, len(self.controls))
+        conn.send(self.estado_msg())
+
+    def detach_control(self, conn: Connection) -> None:
+        conn.abort()
+        self.controls.discard(conn)
+        log.info("Control %d desconectado (%d en total).", conn.id, len(self.controls))
+
+    async def handle_control_raw(self, conn: Connection, raw: str | bytes) -> None:
+        """Valida una orden de un control y la reenvía al visor. Nunca cierra la conexión."""
+        try:
+            cmd = parse_control_message(raw)
+        except ProtocolError as exc:
+            log.info("Orden de control inválida: %s", exc.message)
+            conn.send(control_error_msg(exc.message, exc.code))
+            return
+        try:
+            if cmd.cmd == "open_script":
+                await self._open_script(conn, cmd)
+                return
+            if not self.viewer_connected():
+                conn.send(self.estado_msg())   # conectado: false; la orden se descarta
+                return
+            self.send(control_forward_msg(cmd))
+        except Exception:
+            log.exception("Error al procesar la orden de control %r.", cmd.cmd)
+            conn.send(control_error_msg("Error interno al procesar la orden.", "INTERNAL"))
+
+    async def _open_script(self, ctl: Connection, cmd: ControlCmd) -> None:
+        """Carga `guiones/<nombre>` (con o sin .txt) sin salir de la carpeta y lo manda al visor."""
+        path = resolve_script(cmd.value)
+        if path is None:
+            ctl.send(control_error_msg(f"No existe el guion '{cmd.value}' en guiones/."))
+            return
+        try:
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError) as exc:
+            ctl.send(control_error_msg(f"No se pudo leer el guion: {exc}"))
+            return
+        if not self.viewer_connected():
+            ctl.send(self.estado_msg())
+            return
+        if await self._stop_listening():
+            self.send(status_msg("paused", "Escucha pausada para cargar el guion."))
+        try:
+            parsed, matcher = await asyncio.to_thread(build_script, text)
+        except ValueError as exc:
+            ctl.send(control_error_msg(f"No se pudo cargar el guion: {exc}"))
+            return
+        self.script = parsed
+        self.script_name = path.name
+        self.matcher = matcher
+        self._reposition(None, 0)
+        log.info("Guion '%s' abierto desde un control: %d palabras.", path.name, parsed.total_tokens)
+        self.send(self.state())
+        self.send(self.script_loaded())
 
     async def handle_raw(self, conn: Connection, raw: str | bytes) -> None:
         """Valida y despacha un mensaje del cliente. Nunca cierra la conexión."""
@@ -424,6 +523,9 @@ class Session:
             await self._on_pause(conn)
         elif isinstance(msg, SetPosition):
             self._on_set_position(conn, msg)
+        elif isinstance(msg, Estado):
+            self.estado = msg.fields
+            self.broadcast_estado()
         else:  # set_input_device y mic_test: Fase 6
             conn.send(status_msg("error", f"La acción '{msg.action}' no está disponible todavía.",
                                  "BAD_REQUEST"))
@@ -453,6 +555,7 @@ class Session:
         if not self._active(conn):
             return
         self.script = parsed
+        self.script_name = None
         self.matcher = matcher
         self._reposition(msg.seq)
         log.info("Guion cargado: %d palabras.", parsed.total_tokens)
@@ -471,6 +574,11 @@ class Session:
                 text = f"El modelo de voz no está disponible: {self.model_message}"
             self._reject_start(conn, "MODEL_NOT_READY", text)
             return
+        if self.voice is not None and (self.voice.mode != (msg.mode or "voz")
+                                       or self._brake_params(msg) != self._voice_brakes):
+            await self._stop_listening()   # cambio de modo o de frenos: bucle nuevo
+            if not self._active(conn):
+                return
         if self.voice is None:
             async with self._start_lock:
                 # Una detención anterior (pausa, MIC_LOST, reemplazo) tiene que
@@ -480,14 +588,20 @@ class Session:
                 if not self._active(conn):
                     return
                 if self.voice is None:  # otro start pudo instalarlo mientras se esperaba
-                    if not await self._open_voice(conn):
+                    if not await self._open_voice(conn, msg):
                         return
         idx = self.matcher.current_idx if msg.idx is None else msg.idx
         self._reposition(msg.seq, idx)
         conn.send(status_msg("listening", LISTENING_MESSAGE))
         conn.send(echo_scroll_msg(self.matcher.current_idx, self.epoch))
 
-    async def _open_voice(self, conn: Connection) -> bool:
+    @staticmethod
+    def _brake_params(msg: Start) -> BrakeParams | None:
+        if msg.mode != "voz":
+            return None   # Asistido no usa frenos; sin modo (cliente v2), Voz como en la Fase 2
+        return BrakeParams(**(msg.brakes or {}))
+
+    async def _open_voice(self, conn: Connection, msg: Start) -> bool:
         """Abre la fuente de audio y lanza el bucle (con `_start_lock` tomado).
 
         Devuelve True si quedó escuchando. Si falla responde MIC_ERROR; si la
@@ -497,8 +611,11 @@ class Session:
         try:
             if self._audio is None:
                 self._audio = await asyncio.to_thread(self._audio_factory, self.settings)
+            brakes = self._brake_params(msg)
             voice = VoiceLoop(self, self._audio, self.stt, self.settings, vad=self.vad,
-                              infer_lock=self._infer_lock)
+                              infer_lock=self._infer_lock, mode=msg.mode or "voz",
+                              brakes=brakes)
+            self._voice_brakes = brakes
             await voice.start()
         except asyncio.CancelledError:
             if voice is not None:
@@ -564,6 +681,9 @@ class Session:
         voice, self.voice = self.voice, None
         if voice is None:
             return None
+        if voice.brakes is not None:
+            # El matcher puede ir por delante de lo mostrado: manda lo que vio el lector.
+            self.matcher.set_position(voice.brakes.displayed)
         return self._stop_voice(voice)
 
     def _stop_voice(self, voice: VoiceLoop) -> asyncio.Task:
@@ -609,9 +729,34 @@ class Session:
         conn, self.conn = self.conn, None
         if conn is not None:
             conn.close(CLOSE_GOING_AWAY, "servidor detenido")
+        for ctl in list(self.controls):
+            ctl.close(CLOSE_GOING_AWAY, "servidor detenido")
+        self.controls.clear()
         pending = [t for t in self._bg if not t.done()]
         if pending:
             await asyncio.wait(pending, timeout=BG_TIMEOUT_S)
+
+
+def resolve_script(name: str, base=None):
+    """`guiones/<name>` o `guiones/<name>.txt`, solo si queda dentro de la carpeta; si no, None."""
+    base = (base or SCRIPTS_DIR).resolve()
+    for candidate in (name, f"{name}.txt"):
+        path = (base / candidate).resolve()
+        if path.parent == base and path.is_file():
+            return path
+    return None
+
+
+def server_mod_scripts_dir():
+    """La carpeta de guiones (las pruebas la cambian con monkeypatch de SCRIPTS_DIR)."""
+    return SCRIPTS_DIR
+
+
+def control_origin_ok(origin: str | None, port: int) -> bool:
+    """/control acepta clientes sin Origin (el plugin de Node) o la propia app en 127.0.0.1."""
+    if origin is None:
+        return True
+    return origin in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
 
 
 # ---------------------------------------------------------------- app
@@ -632,13 +777,20 @@ def create_app(settings: Settings | None = None, *,
                       audio_factory or default_audio_factory,
                       vad_factory or default_vad_factory)
 
+    async def estado_ticker() -> None:
+        while True:
+            await asyncio.sleep(ESTADO_PERIOD_S)
+            session.broadcast_estado()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         log.info("Configuración: %s", settings)
         session.start_model_loading()
+        ticker = asyncio.create_task(estado_ticker(), name="estado-ticker")
         try:
             yield
         finally:
+            ticker.cancel()
             await session.shutdown()
 
     app = FastAPI(title="Teleprompter Local IA", lifespan=lifespan)
@@ -649,6 +801,26 @@ def create_app(settings: Settings | None = None, *,
     @app.get("/")
     async def index():
         return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return Response(status_code=204)   # sin icono: evita un 404 en cada carga
+
+    @app.get("/api/guiones")
+    async def list_scripts() -> list[str]:
+        """Hito 84: nombres de los .txt de guiones/ (para el selector y los controles)."""
+        base = server_mod_scripts_dir()
+        if not base.is_dir():
+            return []
+        return sorted(p.name for p in base.iterdir() if p.is_file() and p.suffix.lower() == ".txt")
+
+    @app.get("/api/guiones/{name}")
+    async def read_script(name: str):
+        path = resolve_script(name, server_mod_scripts_dir())
+        if path is None:
+            raise HTTPException(status_code=404, detail="No existe ese guion en guiones/.")
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8-sig")
+        return PlainTextResponse(text)
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -667,6 +839,28 @@ def create_app(settings: Settings | None = None, *,
                 await session.handle_raw(conn, raw)
         finally:
             await session.detach(conn)
+
+    @app.websocket("/control")
+    async def control_endpoint(ws: WebSocket) -> None:
+        # Hito 84 (T6): varios controles a la vez; no tocan al visor de /ws.
+        if not control_origin_ok(ws.headers.get("origin"), settings.port):
+            log.warning("/control rechazado: origen %r.", ws.headers.get("origin"))
+            await ws.close(code=CLOSE_POLICY)
+            return
+        await ws.accept()
+        conn = Connection(ws)
+        try:
+            await session.attach_control(conn)
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                raw = message.get("text")
+                if raw is None:
+                    raw = message.get("bytes") or b""
+                await session.handle_control_raw(conn, raw)
+        finally:
+            session.detach_control(conn)
 
     return app
 

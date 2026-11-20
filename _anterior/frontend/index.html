@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Teleprompter Local IA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="mode-setup">
+  <!-- Avisos visibles en setup y en lectura (conexión, modelo, errores del backend) -->
+  <div id="notices" class="notices" aria-live="polite"></div>
+
+  <div id="setup" class="panel">
+    <h1>Teleprompter Local IA</h1>
+    <p class="status" id="status">Conectando...</p>
+
+    <label for="script">Pega tu guion:</label>
+    <textarea id="script" rows="10" placeholder="Pega aquí el guion completo...&#10;&#10;Deja una línea en blanco entre párrafos.&#10;Usa [corchetes] para directivas de escena: no se leen en voz alta."></textarea>
+
+    <div class="row">
+      <label for="font-size">Tamaño: <span id="font-size-label">64</span> px</label>
+      <input type="range" id="font-size" min="32" max="120" value="64" />
+    </div>
+
+    <div class="row">
+      <label for="line-height">Interlineado: <span id="line-height-label">1.6</span></label>
+      <input type="range" id="line-height" min="1" max="2.5" step="0.05" value="1.6" />
+    </div>
+
+    <div class="row">
+      <label for="auto-speed">Velocidad auto-scroll: <span id="auto-speed-label">3</span></label>
+      <input type="range" id="auto-speed" min="1" max="10" step="0.5" value="3" />
+    </div>
+
+    <div class="row hidden" id="row-opacity">
+      <label for="opacity">Transparencia de la ventana: <span id="opacity-label">0</span> %</label>
+      <input type="range" id="opacity" min="0" max="70" step="5" value="0" />
+      <button id="btn-preview" type="button" title="Muestra unos segundos cómo se ve el modo lectura">👁 Vista previa</button>
+    </div>
+
+    <div class="buttons">
+      <button id="btn-load">Cargar guion</button>
+      <button id="btn-start" disabled>🎙 Manos libres</button>
+      <button id="btn-auto" disabled>▶ Auto-scroll</button>
+      <button id="btn-pause" disabled>⏸ Pausar</button>
+      <button id="btn-reset" disabled>⏮ Reiniciar</button>
+      <button id="btn-fullscreen">⛶ Pantalla completa</button>
+      <button id="btn-stealth" class="hidden">🛡 Stealth: BLOQUEADO</button>
+      <button id="btn-topmost" class="hidden">📌 Siempre adelante: OFF</button>
+    </div>
+
+    <p class="hint">
+      Atajos: <kbd>Espacio</kbd> iniciar/pausar (voz si está disponible) &middot;
+      <kbd>A</kbd> auto-scroll sí/no &middot;
+      <kbd>↑</kbd><kbd>↓</kbd> velocidad del auto-scroll &middot;
+      <kbd>←</kbd><kbd>→</kbd> retroceder/avanzar 5 palabras (<kbd>Shift</kbd>: 15) &middot;
+      <kbd>R</kbd> volver al inicio &middot;
+      <kbd>Esc</kbd> volver al setup &middot;
+      <kbd>F11</kbd> pantalla completa &middot;
+      <kbd>L</kbd> alternar stealth (invisible en capturas, app nativa) &middot;
+      <kbd>T</kbd> alternar siempre adelante (app nativa) &middot;
+      <kbd>O</kbd> transparencia sí/no (app nativa)
+    </p>
+  </div>
+
+  <div id="reader" class="reader">
+    <div class="reticle"></div>
+    <div id="script-view" class="script-view"></div>
+    <div id="preview-sample" class="preview-sample hidden">
+      <p><span class="w read">Así</span> <span class="w read">se</span> <span class="w read">verá</span> <span class="w current">el</span> <span class="w upcoming">texto</span> <span class="w upcoming">de</span> <span class="w upcoming">tu</span> <span class="w upcoming">teleprompter</span> <span class="w upcoming">con</span> <span class="w upcoming">esta</span> <span class="w upcoming">transparencia.</span> <span class="w upcoming">Lo</span> <span class="w upcoming">que</span> <span class="w upcoming">haya</span> <span class="w upcoming">detrás</span> <span class="w upcoming">de</span> <span class="w upcoming">la</span> <span class="w upcoming">ventana</span> <span class="w upcoming">se</span> <span class="w upcoming">alcanza</span> <span class="w upcoming">a</span> <span class="w upcoming">ver.</span></p>
+    </div>
+    <div id="preview-banner" class="preview-banner hidden"></div>
+    <div class="overlay">
+      <span id="overlay-mode">--</span>
+      <span id="overlay-status">●</span>
+      <span id="overlay-sync" class="hidden"></span>
+      <span id="overlay-conn" class="ind">Conectando…</span>
+      <span id="overlay-model" class="ind">Modelo --</span>
+      <span id="overlay-stealth" class="hidden">🛡 STEALTH</span>
+      <span id="overlay-topmost" class="hidden">📌 ADELANTE</span>
+      <span id="overlay-opacity" class="hidden">◐ --</span>
+      <span id="overlay-lag">lag -- ms</span>
+      <span id="overlay-stt">stt -- ms</span>
+      <span id="overlay-conf">conf --</span>
+      <span id="overlay-speed" class="hidden">vel --</span>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

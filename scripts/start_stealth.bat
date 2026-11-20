@@ -6,8 +6,8 @@ REM  inmediatamente tras lanzar el VBScript.
 REM ---------------------------------------------------------------
 cd /d "%~dp0\.."
 
-if not exist ".venv\Scripts\pythonw.exe" (
-  echo [X] Entorno virtual no encontrado. Ejecuta scripts\install.bat primero.
+if not exist ".venv312\Scripts\pythonw.exe" (
+  echo [X] Falta el entorno .venv312, ver CLAUDE.md.
   pause
   exit /b 1
 )

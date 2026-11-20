@@ -34,9 +34,12 @@ from typing import Any, Protocol
 import numpy as np
 
 from backend.config import Settings
-from backend.protocol import CODES, level_msg, scroll_msg, status_msg, transcript_msg
+from backend.protocol import (
+    CODES, activity_msg, level_msg, scroll_msg, status_msg, transcript_msg,
+)
 from tools.text_norm import to_units
 from tools.transcript_filter import clean_transcription
+from tools.voice_brakes import BrakeParams, VoiceBrakes
 
 log = logging.getLogger("teleprompter.voice")
 
@@ -52,6 +55,8 @@ INTERNAL_MESSAGE = "Error interno en el reconocimiento de voz; se pausó la escu
 LISTENING_MESSAGE = "Escuchando…"
 DESYNC_MESSAGE = "Buscando la posición en el guion…"
 DROPPED_PREFIX = "[descartado: {reason}] "  # transcript descartado (solo con TP_DEBUG)
+BRAKE_TICK_S = 0.1     # frenos de Voz: el cursor visible avanza en pasos de este periodo
+ASSIST_TAIL_S = 0.5    # Asistido: el VAD mira solo el último medio segundo
 
 
 # ---------------------------------------------------------------- ciclo síncrono
@@ -145,10 +150,27 @@ class VoiceLoop:
     """Un ciclo de escucha: se crea en `start` y se descarta al pausar."""
 
     def __init__(self, host: VoiceHost, audio: Any, stt: Any, settings: Settings, *,
-                 vad: Any, infer_lock: threading.Lock | None = None) -> None:
+                 vad: Any, infer_lock: threading.Lock | None = None,
+                 mode: str = "voz", brakes: BrakeParams | None = None) -> None:
+        """`mode`: "voz" (sigue las palabras) o "asistido" (solo informa si hay voz).
+
+        Con `brakes`, en Voz la posición que se emite pasa por los frenos
+        (tools/voice_brakes.py); sin ellos se emite la del matcher (como en la Fase 2).
+        """
         self._host = host
         self._audio = audio
         self._settings = settings
+        self.mode = mode
+        self._vad = vad
+        self.brakes: VoiceBrakes | None = None
+        if mode == "voz" and brakes is not None:
+            matcher = host.matcher
+            self.brakes = VoiceBrakes(matcher.tokens, brakes, start_idx=matcher.current_idx,
+                                      now=time.monotonic())
+        self._last_scroll: dict = {}   # confianza, stt y lag del último resultado (para el tick)
+        self._last_speech = 0.0        # Asistido: último ciclo con voz
+        self._speaking: bool | None = None
+        self._brake_task: asyncio.Task | None = None
         self._cycle_runner = VoiceCycle(stt, vad, settings)
         # Compartido entre bucles: una inferencia huérfana (bucle ya detenido)
         # impide lanzar otra hasta que termine.
@@ -176,8 +198,11 @@ class VoiceLoop:
         self._started_at = time.monotonic()
         # Solo cuenta el audio capturado desde ahora (la fuente puede reutilizarse).
         self._since = self._audio.total_samples
+        self._last_speech = self._started_at
         self._task = asyncio.create_task(self._run(), name="voice-loop")
         self._level_task = asyncio.create_task(self._level_loop(), name="voice-level")
+        if self.brakes is not None:
+            self._brake_task = asyncio.create_task(self._brake_loop(), name="voice-brakes")
 
     def reposition(self) -> None:
         """Tras un reposicionamiento: descarta el audio capturado hasta ahora.
@@ -187,6 +212,8 @@ class VoiceLoop:
         la eligió el usuario.
         """
         self._since = self._audio.total_samples
+        if self.brakes is not None:
+            self.brakes.reset(self._host.matcher.current_idx, time.monotonic())
         if self._desync:
             self._desync = False
             self._emit(status_msg("listening", LISTENING_MESSAGE))
@@ -195,7 +222,7 @@ class VoiceLoop:
         """Detiene el bucle sin esperar: cancela sus tareas y no emite nada más."""
         self._halted = True
         current = asyncio.current_task()
-        for task in (self._task, self._level_task):
+        for task in (self._task, self._level_task, self._brake_task):
             if task is not None and task is not current:
                 task.cancel()
 
@@ -209,8 +236,9 @@ class VoiceLoop:
         """
         self.halt()
         current = asyncio.current_task()
-        tasks = [t for t in (self._task, self._level_task) if t is not None and t is not current]
-        self._task = self._level_task = None
+        tasks = [t for t in (self._task, self._level_task, self._brake_task)
+                 if t is not None and t is not current]
+        self._task = self._level_task = self._brake_task = None
         if tasks:
             await asyncio.wait(tasks, timeout=STOP_TIMEOUT_S)
         try:
@@ -282,6 +310,9 @@ class VoiceLoop:
         capture_ts = float(self._audio.last_callback_ts or 0.0)
         if total <= self._last_total:
             return  # sin audio nuevo desde la última ventana: el resultado sería el mismo
+        if self.mode == "asistido":
+            await self._assist_cycle(samples, total)
+            return
         if samples.size < int(MIN_WINDOW_S * SAMPLE_RATE):
             return  # todavía no hay 1 s posterior al último reposicionamiento
         matcher = host.matcher
@@ -305,13 +336,69 @@ class VoiceLoop:
         if match is None:
             return
         resync = bool(getattr(match, "resync", False))
-        if match.advanced or resync:
-            lag_ms = int((time.monotonic() - capture_ts) * 1000) if capture_ts else 0
+        lag_ms = int((time.monotonic() - capture_ts) * 1000) if capture_ts else 0
+        if self.brakes is not None:
+            self._last_scroll = {"confidence": match.confidence, "stt_ms": out.stt_ms,
+                                 "lag_ms": lag_ms}
+            now = time.monotonic()
+            if self.brakes.observe(getattr(match, "aligned_idx", None),
+                                   int(getattr(match, "run", 0) or 0), resync=resync, now=now):
+                self._emit_brake_scroll(self.brakes.displayed, resync=True)
+            else:
+                idx = self.brakes.tick(now)
+                if idx is not None:
+                    self._emit_brake_scroll(idx)
+        elif match.advanced or resync:
             self._emit(scroll_msg(
                 current_idx=match.new_idx, epoch=host.epoch, confidence=match.confidence,
                 matched_word=match.matched_word, stt_ms=out.stt_ms, lag_ms=lag_ms,
                 resync=resync))
         self._update_desync(bool(getattr(match, "desync", False)) and not resync)
+
+    # ------------------------------------------------------------ frenos (Voz)
+
+    def _emit_brake_scroll(self, idx: int, *, resync: bool = False) -> None:
+        tokens = self._host.matcher.tokens
+        word = tokens[idx - 1].text if 0 < idx <= len(tokens) else ""
+        last = self._last_scroll
+        self._emit(scroll_msg(
+            current_idx=idx, epoch=self._host.epoch, confidence=last.get("confidence", 1.0),
+            matched_word=word, stt_ms=last.get("stt_ms", 0), lag_ms=last.get("lag_ms", 0),
+            resync=resync))
+
+    async def _brake_loop(self) -> None:
+        """Avanza el cursor visible hacia el objetivo confirmado, sin superar la velocidad máxima."""
+        try:
+            while True:
+                await asyncio.sleep(BRAKE_TICK_S)
+                brakes = self.brakes
+                if brakes is None:
+                    return
+                idx = brakes.tick(time.monotonic())
+                if idx is not None:
+                    self._emit_brake_scroll(idx)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # un fallo aquí no debe tumbar la escucha
+            log.exception("Error en el avance frenado; se desactiva.")
+
+    # ------------------------------------------------------------ Asistido
+
+    async def _assist_cycle(self, samples: np.ndarray, total: int) -> None:
+        """Asistido: solo el VAD sobre el último medio segundo; informa si hay voz."""
+        if samples.size < int(ASSIST_TAIL_S * SAMPLE_RATE):
+            return
+        tail = samples[-int(ASSIST_TAIL_S * SAMPLE_RATE):]
+        speaking = bool(await asyncio.to_thread(self._vad.has_speech, tail, tail_s=ASSIST_TAIL_S))
+        if self._halted:
+            return
+        self._last_total = total
+        now = time.monotonic()
+        if speaking:
+            self._last_speech = now
+        silence_ms = 0 if speaking else int((now - self._last_speech) * 1000)
+        self._speaking = speaking
+        self._emit(activity_msg(speaking, silence_ms))
 
     def _update_desync(self, desync: bool) -> None:
         """Informa solo las transiciones: `desync` al entrar y `listening` al salir."""

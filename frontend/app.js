@@ -124,32 +124,51 @@
     status: $("status"),
     notices: $("notices"),
     scriptText: $("script"),
-    fontSize: $("font-size"),
-    fontSizeLabel: $("font-size-label"),
+    selGuion: $("sel-guion"),
+    letra: $("letra"),
+    letraLabel: $("letra-label"),
     lineHeight: $("line-height"),
     lineHeightLabel: $("line-height-label"),
-    autoSpeed: $("auto-speed"),
-    autoSpeedLabel: $("auto-speed-label"),
+    fondo: $("fondo"),
+    fondoLabel: $("fondo-label"),
+    fondoNota: $("fondo-nota"),
+    chkBanda: $("chk-banda"),
+    chkHalo: $("chk-halo"),
+    btnPreajuste: $("btn-preajuste"),
+    btnPreview: $("btn-preview"),
+    modoNota: $("modo-nota"),
+    velocidad: $("velocidad"),
+    velocidadLabel: $("velocidad-label"),
+    pausaAsistido: $("pausa-asistido"),
+    pausaAsistidoLabel: $("pausa-asistido-label"),
+    frenoConfirmar: $("freno-confirmar"),
+    frenoConfirmarLabel: $("freno-confirmar-label"),
+    frenoAdelanto: $("freno-adelanto"),
+    frenoAdelantoLabel: $("freno-adelanto-label"),
+    frenoVelmax: $("freno-velmax"),
+    frenoVelmaxLabel: $("freno-velmax-label"),
+    chkFrase: $("chk-frase"),
+    chkEspejo: $("chk-espejo"),
+    chkTopmost: $("chk-topmost"),
+    chkStealth: $("chk-stealth"),
     btnLoad: $("btn-load"),
-    btnStart: $("btn-start"),
     btnAuto: $("btn-auto"),
-    btnPause: $("btn-pause"),
-    btnReset: $("btn-reset"),
     btnFullscreen: $("btn-fullscreen"),
-    btnStealth: $("btn-stealth"),
-    btnTopmost: $("btn-topmost"),
     scriptView: $("script-view"),
-    overlayMode: $("overlay-mode"),
-    overlayStatus: $("overlay-status"),
-    overlaySync: $("overlay-sync"),
-    overlayConn: $("overlay-conn"),
-    overlayModel: $("overlay-model"),
-    overlayStealth: $("overlay-stealth"),
-    overlayTopmost: $("overlay-topmost"),
-    overlayLag: $("overlay-lag"),
-    overlayStt: $("overlay-stt"),
-    overlayConf: $("overlay-conf"),
-    overlaySpeed: $("overlay-speed"),
+    previewSample: $("preview-sample"),
+    previewBanner: $("preview-banner"),
+    barraMarcha: $("barra-marcha"),
+    barraSeccion: $("barra-seccion"),
+    barraVelocidad: $("barra-velocidad"),
+    barraTiempo: $("barra-tiempo"),
+    chipConn: $("chip-conn"),
+    chipModel: $("chip-model"),
+    chipSync: $("chip-sync"),
+    chipStealth: $("chip-stealth"),
+    chipTopmost: $("chip-topmost"),
+    chipStats: $("chip-stats"),
+    cuenta: $("cuenta"),
+    cuentaNum: $("cuenta-num"),
   };
 
   // ===== Estado =====
@@ -193,10 +212,23 @@
     currentIdx: 0,
     lastLineTop: null,       // offsetTop del renglón centrado por última vez
     recenterQueued: false,
-    // Auto-scroll (local, no necesita backend)
+    // Manual (local, no necesita backend)
     autoTimer: null,
-    autoSpeed: 3,            // palabras por segundo
+    // Hito 84
+    voiceKind: "voz",        // "voz" | "asistido" mientras se escucha
+    assist: { speaking: false, heard: false, silenceSince: null, step: {}, timer: null },
+    countdown: null,         // número que se muestra, o null
+    countdownTimer: null,
+    clock: { since: null, elapsed: 0 },   // tiempo en marcha
+    rate: [],                // Voz: (t, idx) de los últimos segundos
+    paraStarts: [],          // primera palabra de cada párrafo
+    secStarts: [],           // inicio de cada sección (directivas)
+    secNames: [],
+    scriptName: null,        // nombre en guiones/, si vino de ahí
+    pendingName: null,
+    debugStats: false,
   };
+  let prefs = TPCore.prefsDefecto();   // se cargan de localStorage al iniciar
 
   // ===== Avisos (barra fija arriba, visible en setup y en lectura) =====
   const NOTICE_MAX = 4;
@@ -476,6 +508,8 @@
       case "scroll": onScroll(msg); break;
       case "status": onStatus(msg); break;
       case "level": break;        // medidor de nivel: Fase 6
+      case "activity": onActivity(msg); break;   // Asistido: ¿hay voz?
+      case "control": onControl(msg); break;     // orden de un Stream Deck (/control)
       case "transcript": break;   // solo depuración (TP_DEBUG)
       default: break;
     }
@@ -488,6 +522,7 @@
     }
     if (typeof msg.model_name === "string") state.modelName = msg.model_name;
     if (typeof msg.device === "string") state.device = msg.device;
+    state.debugStats = msg.debug === true;
     setModel(msg.model);
     if (state.model === "error" && !hasNotice("model")) {
       notify("error", "El modelo de voz no está disponible. Revisa logs/teleprompter.log.", { channel: "model", sticky: true });
@@ -552,6 +587,7 @@
     // Reenvío del mismo texto: los segmentos son idénticos, solo cambia el id.
     if (kind === "resync" && state.script && typeof msg.text === "string" && msg.text === state.script.text) {
       state.script.id = msg.script_id;
+      // (el nombre del guion no cambia en un reenvío)
       state.restoreIdx = null;
       updateUI();
       return;
@@ -564,6 +600,9 @@
     if (state.mode === "auto" && kind !== "resync") setMode("idle");
 
     renderScript(msg, idx);
+    state.scriptName = typeof msg.name === "string" && msg.name ? msg.name
+      : (kind === "user" ? state.pendingName : null);
+    state.clock = { since: null, elapsed: 0 };
     if (!els.scriptText.value.trim() && typeof msg.text === "string") els.scriptText.value = msg.text;
     const total = state.script.total;
     if (kind === "user") notify("info", `Guion cargado: ${total} palabras.`, { channel: "script" });
@@ -609,12 +648,6 @@
       state.syncFlash = false;
       updateOverlay();
     }, SYNC_FLASH_MS);
-    const el = els.overlaySync;
-    if (el.dataset.sync === "resynced") {
-      // Dos resync seguidos: quitar el estado y forzar un reflow reinicia la animación.
-      el.dataset.sync = "";
-      void el.offsetWidth;
-    }
     updateOverlay();
   }
 
@@ -720,19 +753,30 @@
     }
   }
 
-  // ===== Modos =====
+  // ===== Modos (hito 84, T4) =====
+  // prefs.avance es el modo ELEGIDO (manual | asistido | voz; Manual por defecto).
+  // state.mode es la MARCHA: idle | auto (Manual) | voice_pending | voice. En
+  // voice_pending/voice, state.voiceKind dice si es "voz" o "asistido".
   function setMode(mode) {
     const prev = state.mode;
     if (prev === mode) return;
     if (prev === "auto") stopAutoTimer();
     if (prev === "voice_pending") clearStartTimer();
+    if (prev === "voice" && state.voiceKind === "asistido") stopAssistTimer();
     state.mode = mode;
     if (mode !== "voice") {
       state.desync = false;
       clearSyncFlash();
     }
+    if (mode === "voice" && state.voiceKind === "asistido") startAssistTimer();
+    if (mode === "idle") pauseClock();
+    else resumeClock();
     clearNotices("server");
     updateUI();
+  }
+
+  function isListening() {
+    return state.mode === "voice" || state.mode === "voice_pending";
   }
 
   function clearStartTimer() {
@@ -750,30 +794,36 @@
 
   const LOAD_PENDING_MSG = "Esperando a que el backend cargue el guion…";
 
-  /** Motivo por el que no se puede iniciar la voz, o null. */
+  /** Motivo por el que no se puede escuchar (Voz o Asistido), o null. */
   function voiceBlocker() {
     if (!state.script) return "Carga un guion primero.";
     if (state.conn === "replaced") return "La app está abierta en otra ventana: retoma el control primero.";
-    if (state.conn !== "open") return "Sin conexión con el backend local. Auto-scroll (A) funciona igual.";
+    if (state.conn !== "open") return "Sin conexión con el backend local. Manual funciona igual.";
     if (loadPending()) return LOAD_PENDING_MSG;
-    if (state.model === "error") return "El modelo de voz no está disponible. Auto-scroll (A) funciona igual.";
-    if (state.model !== "ready") return "El modelo aún se está cargando. Auto-scroll (A) ya está disponible.";
+    if (state.model === "error") return "El modelo de voz no está disponible. Manual funciona igual.";
+    if (state.model !== "ready") return "El modelo aún se está cargando. Manual ya está disponible.";
     return null;
   }
 
-  /** Pasa a voz desde idle o Auto: start con el índice actual (atómico en el backend). */
-  function startVoice() {
+  /** Escucha en Voz (con frenos) o en Asistido: start con el índice actual. */
+  function startVoice(kind = "voz") {
     const why = voiceBlocker();
     if (why) {
       notify("warning", why, { channel: "voice" });
       return;
     }
-    if (state.mode === "voice" || state.mode === "voice_pending") return;
-    // Desde Auto no hace falta set_position: el start lleva el índice actual.
+    if (isListening()) return;
     if (state.mode === "auto") setMode("idle");
     clearNotices("voice");
     enterReaderMode();
-    if (!sendSeq({ action: "start", idx: state.currentIdx })) return;
+    const msg = { action: "start", idx: state.currentIdx, mode: kind };
+    if (kind === "voz") msg.brakes = { ...prefs.frenos };
+    if (!sendSeq(msg)) return;
+    state.voiceKind = kind;
+    state.assist.speaking = false;
+    state.assist.heard = false;
+    state.assist.silenceSince = null;     // Asistido espera a oír voz antes de avanzar
+    state.assist.step = {};
     state.startSeq = state.lastSentSeq;
     state.voiceReqs++;
     setMode("voice_pending");
@@ -790,25 +840,54 @@
   }
 
   function pauseVoice() {
-    if (state.mode !== "voice" && state.mode !== "voice_pending") return;
+    if (!isListening()) return;
     setMode("idle");
     sendPause();   // sin conexión el backend ya dejó de escuchar
+    if (state.voiceKind === "asistido") syncPosition();   // la posición la movió el visor
   }
 
-  /** Sale del Auto-scroll y deja la posición local en el backend. */
+  /** Sale del Manual y deja la posición local en el backend. */
   function stopAuto() {
     if (state.mode !== "auto") return;
     setMode("idle");
     syncPosition();
   }
 
-  function togglePlay() {
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
+  /** Pausa lo que esté en marcha (y la cuenta atrás). */
+  function pauseAll() {
+    cancelCountdown();
+    if (isListening()) pauseVoice();
     else if (state.mode === "auto") stopAuto();
-    else startVoice();
   }
 
-  // ===== Auto-scroll (local) =====
+  /** Empieza a leer en el modo elegido. */
+  function startReading() {
+    cancelCountdown();
+    if (prefs.avance === "manual") startAuto();
+    else startVoice(prefs.avance);
+  }
+
+  function running() {
+    return state.mode !== "idle";
+  }
+
+  function togglePlay() {
+    if (state.countdown !== null) { cancelCountdown(); updateUI(); return; }
+    if (running()) pauseAll();
+    else startReading();
+  }
+
+  /** Cambia el modo elegido; si estaba en marcha, sigue en el modo nuevo. */
+  function setAvance(modo) {
+    if (!TPCore.MODOS.includes(modo) || modo === prefs.avance) return;
+    const wasRunning = running();
+    if (wasRunning) pauseAll();
+    prefs = { ...prefs, avance: modo };
+    applyPrefs();
+    if (wasRunning) startReading();
+  }
+
+  // ===== Manual (local, no necesita backend) =====
   function startAuto() {
     if (!state.script) {
       notify("warning", "Carga un guion primero.", { channel: "script" });
@@ -818,7 +897,7 @@
       notify("info", "Fin del guion: pulsa R para volver al inicio.", { channel: "script" });
       return;
     }
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
+    if (isListening()) pauseVoice();
     enterReaderMode();
     setMode("auto");
     scheduleAuto();
@@ -826,12 +905,15 @@
 
   function toggleAuto() {
     if (state.mode === "auto") stopAuto();
-    else startAuto();
+    else {
+      if (prefs.avance !== "manual") { prefs = { ...prefs, avance: "manual" }; applyPrefs(); }
+      startAuto();
+    }
   }
 
   function scheduleAuto() {
     stopAutoTimer();
-    state.autoTimer = setTimeout(autoTick, 1000 / state.autoSpeed);
+    state.autoTimer = setTimeout(autoTick, 1000 / pps());
   }
 
   function stopAutoTimer() {
@@ -842,28 +924,73 @@
   function autoTick() {
     state.autoTimer = null;
     if (state.mode !== "auto" || !state.script) return;
-    const total = state.script.total;
-    if (state.currentIdx >= total) {
+    if (!advanceOne()) {
       stopAuto();
       notify("info", "Fin del guion.", { channel: "script" });
       return;
     }
-    applyIndex(skipForward(state.currentIdx + 1, state.skips, total));
     scheduleAuto();
   }
 
-  function setSpeed(v) {
-    state.autoSpeed = v;
-    els.autoSpeed.value = String(v);
-    els.autoSpeedLabel.textContent = String(v);
-    updateOverlay();
+  /** Avanza una palabra; false si ya estaba al final. */
+  function advanceOne() {
+    const total = state.script.total;
+    if (state.currentIdx >= total) return false;
+    applyIndex(skipForward(state.currentIdx + 1, state.skips, total));
+    return true;
+  }
+
+  // ===== Asistido (velocidad fija; se para si callas más de la pausa) =====
+  function startAssistTimer() {
+    stopAssistTimer();
+    state.assist.step = {};
+    state.assist.timer = setInterval(assistTick, 40);
+  }
+
+  function stopAssistTimer() {
+    clearInterval(state.assist.timer);
+    state.assist.timer = null;
+  }
+
+  function assistCan(now) {
+    return TPCore.asistidoPuede(now, state.assist.speaking, state.assist.silenceSince,
+                                prefs.pausa_asistido_s);
+  }
+
+  function assistTick() {
+    if (state.mode !== "voice" || state.voiceKind !== "asistido" || !state.script) return;
+    const now = performance.now() / 1000;
+    const can = assistCan(now);
+    const marcha = can ? "corriendo" : "espera";
+    if (els.body.dataset.marcha !== marcha) updateUI();
+    if (TPCore.pasoFijo(state.assist.step, now, pps(), can) && !advanceOne()) {
+      pauseVoice();
+      notify("info", "Fin del guion.", { channel: "script" });
+    }
+  }
+
+  function onActivity(msg) {
+    if (state.mode !== "voice" || state.voiceKind !== "asistido") return;
+    const now = performance.now() / 1000;
+    if (msg.speaking === true) {
+      state.assist.speaking = true;
+      state.assist.heard = true;
+      state.assist.silenceSince = null;
+    } else {
+      // Antes de oír la primera palabra no hay silencio que contar: espera.
+      const silence = Number.isFinite(msg.silence_ms) ? msg.silence_ms / 1000 : 0;
+      state.assist.speaking = false;
+      state.assist.silenceSince = state.assist.heard ? now - silence : null;
+    }
+  }
+
+  function pps() {
+    return TPCore.velocidadAPps(prefs.velocidad);
   }
 
   function changeSpeed(delta) {
-    const min = parseFloat(els.autoSpeed.min) || 1;
-    const max = parseFloat(els.autoSpeed.max) || 10;
-    const v = Math.round((state.autoSpeed + delta) * 2) / 2;
-    setSpeed(Math.min(max, Math.max(min, v)));
+    prefs = { ...prefs, velocidad: TPCore.clamp(prefs.velocidad + delta, TPCore.VEL_MIN, TPCore.VEL_MAX) };
+    applyPrefs();
   }
 
   // ===== Posición =====
@@ -884,17 +1011,101 @@
     sendSeq({ action: "set_position", idx: state.currentIdx });
   }
 
+  function jumpTo(idx, opts) {
+    if (!state.script) return;
+    const total = state.script.total;
+    setPosition(skipForward(clampIdx(idx, total), state.skips, total), opts);
+  }
+
   function step(delta) {
     if (!state.script || positionLocked()) return;
-    const total = state.script.total;
-    setPosition(skipForward(clampIdx(state.currentIdx + delta, total), state.skips, total));
+    jumpTo(state.currentIdx + delta);
   }
 
   function resetPosition() {
     if (!state.script || positionLocked()) return;
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
+    if (isListening()) pauseVoice();
     else if (state.mode === "auto") setMode("idle");   // el set_position de abajo informa la posición
     setPosition(0, { instant: true, recenter: true });
+  }
+
+  /** Primera palabra de cada renglón dibujado (para atrás N líneas y el dial). */
+  function lineStarts() {
+    const out = [];
+    let lastTop = null;
+    const words = state.wordEls;
+    for (let i = 0; i < words.length; i++) {
+      const el = words[i];
+      if (!el || state.skips[i]) continue;
+      const top = el.offsetTop;
+      if (top !== lastTop) { out.push(i); lastTop = top; }
+    }
+    return out;
+  }
+
+  function moveLines(delta) {
+    if (!state.script) return;
+    if (!els.body.classList.contains("mode-reader")) enterReaderMode();
+    jumpTo(TPCore.objetivoLineas(state.currentIdx, lineStarts(), delta, state.script.total),
+           { instant: true });
+  }
+
+  // ===== Cuenta atrás =====
+  function startCountdown(n) {
+    cancelCountdown();
+    if (!n || n <= 0) { updateUI(); return; }
+    if (!state.script) { notify("warning", "Carga un guion primero.", { channel: "script" }); return; }
+    if (running()) pauseAll();
+    enterReaderMode();
+    state.countdown = n;
+    const tick = () => {
+      if (state.countdown === null) return;
+      if (state.countdown <= 0) {
+        state.countdown = null;
+        updateUI();
+        startReading();
+        return;
+      }
+      updateUI();
+      state.countdown -= 1;
+      state.countdownTimer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  function cancelCountdown() {
+    clearTimeout(state.countdownTimer);
+    state.countdownTimer = null;
+    if (state.countdown !== null) state.countdown = null;
+  }
+
+  // ===== Reloj de lectura (transcurrido) y ritmo observado (Voz) =====
+  function resumeClock() {
+    if (state.clock.since === null) state.clock.since = performance.now();
+  }
+
+  function pauseClock() {
+    if (state.clock.since !== null) {
+      state.clock.elapsed += (performance.now() - state.clock.since) / 1000;
+      state.clock.since = null;
+    }
+  }
+
+  function elapsedS() {
+    const live = state.clock.since === null ? 0 : (performance.now() - state.clock.since) / 1000;
+    return state.clock.elapsed + live;
+  }
+
+  /** Palabras por segundo observadas en Voz (últimos 20 s); null sin base. */
+  function observedPps() {
+    const h = state.rate;
+    const now = performance.now() / 1000;
+    while (h.length && now - h[0].t > 20) h.shift();
+    if (h.length < 2) return null;
+    const dt = h[h.length - 1].t - h[0].t;
+    const dw = h[h.length - 1].idx - h[0].idx;
+    if (dt < 5 || dw <= 0) return null;
+    return dw / dt;
   }
 
   // ===== Dibujo del guion =====
@@ -907,6 +1118,7 @@
     const skips = new Array(total).fill(false);
     const dirEls = [];
     const dirAts = [];      // inicio del rango de cada directiva (no decreciente)
+    const paraStarts = [];  // primera palabra de cada párrafo
     const rawAts = [];      // at_idx recibido, recortado y no decreciente
     const frag = document.createDocumentFragment();
     let para = null;        // párrafo abierto
@@ -920,6 +1132,7 @@
         const i = seg.idx;
         if (!Number.isInteger(i) || i < 0 || i >= total) continue;
         if (!para) {
+          paraStarts.push(i);
           para = document.createElement("p");
           para.className = gap ? "para gap" : "para";
           gap = false;
@@ -982,6 +1195,9 @@
     state.dirEls = dirEls;
     state.dirAts = dirAts;
     state.dirEnds = dirEnds;
+    state.paraStarts = paraStarts;
+    state.secStarts = dirAts.slice();
+    state.secNames = dirEls.map((el) => el.textContent.replace(/^\[|\]$/g, "").trim());
     state.currentIdx = cur;
     state.lastLineTop = null;
     followCurrent(true, true);
@@ -1064,6 +1280,7 @@
     if (els.body.classList.contains("mode-reader")) return;
     els.body.classList.remove("mode-setup");
     els.body.classList.add("mode-reader");
+    measureLine();
     followCurrent(true, true);
   }
 
@@ -1075,95 +1292,180 @@
   }
 
   function backToSetup() {
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
-    else if (state.mode === "auto") stopAuto();
+    pauseAll();
     exitReaderMode();
     updateUI();
   }
 
+  // ===== Preferencias (lectura, fondo, avance, frenos) =====
+  const PREFS_KEY = "tp.prefs.v3";
+
+  function loadPrefs() {
+    try {
+      return TPCore.sanearPrefs(JSON.parse(localStorage.getItem(PREFS_KEY) || "null"));
+    } catch {
+      return TPCore.prefsDefecto();
+    }
+  }
+
+  function savePrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* sin almacenamiento: no se recuerda */ }
+  }
+
+  const fmt1 = (v) => String(Math.round(v * 100) / 100).replace(".", ",");
+
+  /** Lleva las preferencias a la página (atributos, variables CSS, controles) y las guarda. */
+  function applyPrefs() {
+    const b = els.body;
+    b.dataset.modo = prefs.avance;
+    b.dataset.banda = prefs.banda ? "on" : "off";
+    b.dataset.halo = prefs.halo ? "on" : "off";
+    b.dataset.texto = prefs.texto;
+    b.dataset.espejo = prefs.espejo ? "on" : "off";
+    const root = document.documentElement.style;
+    root.setProperty("--tp-fondo-alfa", String(prefs.fondo_pct / 100));
+    root.setProperty("--tp-escala", String(TPCore.escalaLetra(prefs.letra)));
+    root.setProperty("--tp-interlineado", String(prefs.interlineado));
+
+    setRange(els.letra, prefs.letra, els.letraLabel, `${fmt1(TPCore.escalaLetra(prefs.letra))}×`);
+    setRange(els.lineHeight, prefs.interlineado, els.lineHeightLabel, fmt1(prefs.interlineado));
+    setRange(els.fondo, prefs.fondo_pct, els.fondoLabel, `${prefs.fondo_pct} %`);
+    setRange(els.velocidad, prefs.velocidad, els.velocidadLabel,
+             `${prefs.velocidad} · ${Math.round(pps() * 60)} ppm`);
+    setRange(els.pausaAsistido, prefs.pausa_asistido_s, els.pausaAsistidoLabel, `${fmt1(prefs.pausa_asistido_s)} s`);
+    const f = prefs.frenos;
+    setRange(els.frenoConfirmar, f.confirm_words, els.frenoConfirmarLabel, `${f.confirm_words} palabras`);
+    setRange(els.frenoAdelanto, f.max_ahead, els.frenoAdelantoLabel, `${f.max_ahead} palabras`);
+    setRange(els.frenoVelmax, f.max_wps, els.frenoVelmaxLabel, `${fmt1(f.max_wps)} pal/s`);
+    els.chkFrase.checked = f.sentence_guard;
+    els.chkBanda.checked = prefs.banda;
+    els.chkHalo.checked = prefs.halo;
+    els.chkEspejo.checked = prefs.espejo;
+    for (const btn of document.querySelectorAll(".muestra-color")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.color === prefs.texto));
+    }
+    for (const btn of document.querySelectorAll(".segmentado [data-modo]")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.modo === prefs.avance));
+    }
+    const notas = {
+      manual: "Velocidad constante; el micrófono no interviene.",
+      asistido: "Avanza a tu velocidad fija; si callas más que la pausa, se detiene y sigue al volver a hablar.",
+      voz: "Sigue tus palabras con los frenos de abajo.",
+    };
+    els.modoNota.textContent = notas[prefs.avance];
+    applyNativeBackdrop();
+    measureLine();
+    savePrefs();
+    state.lastLineTop = null;
+    recenterSoon();
+    updateUI();
+  }
+
+  function setRange(input, value, label, text) {
+    if (document.activeElement !== input) input.value = String(value);
+    label.textContent = text;
+  }
+
+  /** Alto real de un renglón de lectura: lo usa la banda (--tp-linea). */
+  function measureLine() {
+    const cs = getComputedStyle(els.scriptView);
+    const fs = parseFloat(cs.fontSize) || 64;
+    const lh = parseFloat(cs.lineHeight);
+    const px = Number.isFinite(lh) ? lh : fs * prefs.interlineado;
+    document.documentElement.style.setProperty("--tp-linea", `${Math.round(px)}px`);
+  }
+
   // ===== UI =====
   const CONN_LABEL = {
-    connecting: ["Conectando…", "warn"],
-    open: ["Conectado", "ok"],
-    closed: ["Reconectando…", "warn"],
+    connecting: ["Conectando…", "aviso"],
+    open: ["Servidor", "ok"],
+    closed: ["Reconectando…", "aviso"],
     replaced: ["Abierto en otra ventana", "error"],
   };
   const MODEL_LABEL = {
-    unknown: ["Modelo --", "off"],
-    loading: ["Cargando modelo…", "warn"],
+    unknown: null,
+    loading: ["Cargando modelo…", "aviso"],
     ready: ["Modelo listo", "ok"],
     error: ["Error de modelo", "error"],
   };
 
-  function setIndicator(el, label, level) {
-    el.textContent = label;
-    el.dataset.level = level;
+  function setChip(el, spec) {
+    if (!spec) { el.classList.add("hidden"); return; }
+    el.classList.remove("hidden");
+    el.textContent = spec[0];
+    el.dataset.nivel = spec[1];
+  }
+
+  function marcha() {
+    if (state.countdown !== null) return "cuenta";
+    if (state.mode === "idle") return "pausa";
+    if (state.mode === "voice_pending") return "espera";
+    if (state.mode === "voice" && state.voiceKind === "asistido" && !assistCan(performance.now() / 1000)) return "espera";
+    return "corriendo";
   }
 
   function updateUI() {
     updateButtons();
-    updateOverlay();
+    updateBarra();
     updateStatusLine();
+    queueEstado();
   }
 
   function updateButtons() {
     const has = !!state.script;
-    const idle = state.mode === "idle";
-    const pending = loadPending();
-    els.btnStart.disabled = !(state.conn === "open" && state.model === "ready" && has && idle && !pending);
-    els.btnAuto.disabled = !has || state.mode === "auto";
-    els.btnPause.disabled = idle;
-    els.btnReset.disabled = !has || pending;
+    els.btnAuto.disabled = !has || loadPending();
   }
 
-  function updateOverlay() {
-    const m = state.mode;
-    let label = "⏸ PAUSA";
-    if (m === "voice") label = "🎙 VOZ";
-    else if (m === "voice_pending") label = "🎙 INICIANDO…";
-    else if (m === "auto") label = "▶ AUTO";
-    els.overlayMode.textContent = label;
-    els.overlayMode.dataset.mode = m;
-    els.overlayStatus.classList.toggle("on", m === "voice");
-    updateSyncIndicator();
-
-    const conn = state.conn === "connecting" && state.everOpened ? CONN_LABEL.closed : CONN_LABEL[state.conn];
-    setIndicator(els.overlayConn, conn[0], conn[1]);
-    const model = state.conn === "open" ? MODEL_LABEL[state.model] : MODEL_LABEL.unknown;
-    setIndicator(els.overlayModel, model[0], model[1]);
-
-    const auto = m === "auto";
-    els.overlaySpeed.classList.toggle("hidden", !auto);
-    els.overlayLag.classList.toggle("hidden", auto);
-    els.overlayStt.classList.toggle("hidden", auto);
-    els.overlayConf.classList.toggle("hidden", auto);
-    if (auto) els.overlaySpeed.textContent = `vel ${state.autoSpeed.toFixed(1)}`;
-  }
-
-  const SYNC_LABEL = {
-    searching: "Buscando posición…",
-    resynced: "Resincronizado",
+  const MARCHA_LABEL = {
+    corriendo: "▶ En marcha",
+    pausa: "⏸ En pausa",
+    cuenta: "Cuenta atrás",
   };
 
-  /** Indicador de sincronía de la voz: búsqueda en curso o destello tras resincronizar. */
-  function updateSyncIndicator() {
-    let sync = "";
-    if (state.mode === "voice") {
-      if (state.desync) sync = "searching";
-      else if (state.syncFlash) sync = "resynced";
+  function updateBarra() {
+    const m = marcha();
+    els.body.dataset.marcha = m;
+    let label = MARCHA_LABEL[m];
+    if (m === "espera") label = state.mode === "voice_pending" ? "Iniciando…" : "Esperando tu voz";
+    els.barraMarcha.textContent = label;
+    els.cuenta.classList.toggle("hidden", state.countdown === null);
+    els.cuentaNum.textContent = state.countdown === null ? "" : String(state.countdown);
+
+    const conn = state.conn === "connecting" && state.everOpened ? CONN_LABEL.closed : CONN_LABEL[state.conn];
+    setChip(els.chipConn, conn);
+    // El modelo solo importa si el modo elegido lo usa.
+    const needsModel = prefs.avance !== "manual";
+    setChip(els.chipModel, state.conn === "open" && needsModel && state.model !== "ready" ? MODEL_LABEL[state.model] : null);
+    let sync = null;
+    if (state.mode === "voice" && state.voiceKind === "voz") {
+      if (state.desync) sync = ["Buscando posición…", "aviso"];
+      else if (state.syncFlash) sync = ["Resincronizado", "ok"];
     }
-    const el = els.overlaySync;
-    if ((el.dataset.sync || "") === sync) return;   // sin cambios: no reinicia la animación
-    el.dataset.sync = sync;
-    el.textContent = sync ? SYNC_LABEL[sync] : "";
-    el.classList.toggle("hidden", !sync);
+    setChip(els.chipSync, sync);
+    els.chipStats.classList.toggle("hidden", !(state.mode === "voice" && state.voiceKind === "voz" && state.debugStats));
+    setChip(els.chipStealth, native.available && native.locked ? ["Invisible", "ok"] : null);
+    setChip(els.chipTopmost, native.available && native.topmost ? ["Adelante", "ok"] : null);
+
+    const sec = currentSection();
+    els.barraSeccion.textContent = sec ? sec.name : "";
+    const e = buildEstado();
+    els.barraVelocidad.textContent = prefs.avance === "voz"
+      ? (e.ppm === null ? "voz · — ppm" : `voz · ${Math.round(e.ppm)} ppm`)
+      : `vel ${prefs.velocidad} · ${Math.round(e.ppm)} ppm`;
+    const rest = e.restante_s === null ? "—" : `−${TPCore.formatoTiempo(e.restante_s)}`;
+    els.barraTiempo.textContent = `${TPCore.formatoTiempo(e.transcurrido_s)}  ${rest}`;
+    document.documentElement.style.setProperty("--tp-progreso", String(e.progreso ?? 0));
   }
 
   function showStats(msg) {
-    if (Number.isFinite(msg.lag_ms)) els.overlayLag.textContent = `lag ${Math.round(msg.lag_ms)} ms`;
-    if (Number.isFinite(msg.stt_ms)) els.overlayStt.textContent = `stt ${Math.round(msg.stt_ms)} ms`;
-    if (Number.isFinite(msg.confidence)) els.overlayConf.textContent = `conf ${msg.confidence.toFixed(2)}`;
+    const parts = [];
+    if (Number.isFinite(msg.lag_ms)) parts.push(`lag ${Math.round(msg.lag_ms)} ms`);
+    if (Number.isFinite(msg.stt_ms)) parts.push(`stt ${Math.round(msg.stt_ms)} ms`);
+    els.chipStats.textContent = parts.join(" · ");
   }
+
+  function updateSyncIndicator() { updateBarra(); }
+  function updateOverlay() { updateBarra(); }
 
   /** Línea de estado del setup: conexión · modelo · guion. */
   function updateStatusLine() {
@@ -1195,6 +1497,147 @@
     els.status.dataset.level = level;
   }
 
+  // ===== Secciones =====
+  function currentSection() {
+    const k = TPCore.seccionActual(state.currentIdx, state.secStarts);
+    return k < 0 ? null : { idx: k, name: state.secNames[k] };
+  }
+
+  // ===== Estado para los controles (/control, contrato T6) =====
+  function buildEstado() {
+    const total = state.script ? state.script.total : 0;
+    const sec = currentSection();
+    let rate = null;
+    if (prefs.avance === "voz") rate = observedPps();
+    else rate = pps();
+    const left = Math.max(0, total - state.currentIdx);
+    const corriendo = running() && state.countdown === null;
+    return {
+      corriendo,
+      modo: prefs.avance,
+      velocidad: prefs.velocidad,
+      ppm: rate === null ? null : rate * 60,
+      progreso: total ? state.currentIdx / total : null,
+      transcurrido_s: elapsedS(),
+      restante_s: rate ? left / rate : null,
+      seccion: sec ? sec.name : null,
+      seccion_idx: sec ? sec.idx : null,
+      secciones: state.script ? state.secStarts.length : null,
+      letra: prefs.letra,
+      espejo: prefs.espejo,
+      fondo_pct: prefs.fondo_pct,
+      banda: prefs.banda,
+      halo: prefs.halo,
+      bloqueado: native.available ? native.locked : null,
+      adelante: native.available ? native.topmost : null,
+      guion: state.script ? state.scriptName : null,
+      cuenta: state.countdown,
+    };
+  }
+
+  let estadoQueued = false;
+  let lastEstadoJson = "";
+
+  /** Envía el estado al backend si cambió (como mucho una vez por tarea). */
+  function queueEstado() {
+    if (estadoQueued) return;
+    estadoQueued = true;
+    setTimeout(() => {
+      estadoQueued = false;
+      sendEstado(false);
+    }, 0);
+  }
+
+  function sendEstado(force) {
+    if (!isOpen()) return;
+    const e = buildEstado();
+    // Lo que cambia solo con el reloj no cuenta como cambio (va en el envío de cada segundo).
+    const key = JSON.stringify({ ...e, transcurrido_s: 0, restante_s: 0, ppm: prefs.avance === "voz" ? 0 : e.ppm });
+    if (!force && key === lastEstadoJson) return;
+    lastEstadoJson = key;
+    sendRaw({ action: "estado", estado: e });
+  }
+
+  // Cada segundo mientras corre (transcurrido, restante, progreso).
+  setInterval(() => {
+    if (state.mode === "voice" && state.voiceKind === "voz" && state.script) {
+      state.rate.push({ t: performance.now() / 1000, idx: state.currentIdx });
+    }
+    if (running() || state.countdown !== null) {
+      updateBarra();
+      sendEstado(true);
+    }
+  }, 1000);
+
+  // ===== Órdenes de los controles (Stream Deck) =====
+  function onControl(msg) {
+    const cmd = msg.cmd;
+    const value = msg.value;
+    const p2 = TPCore.aplicarOrdenPrefs(prefs, cmd, value);
+    if (p2) {
+      if (cmd === "mode") setAvance(p2.avance);
+      else { prefs = p2; applyPrefs(); }
+      if ((cmd === "faster" || cmd === "slower" || cmd === "set_speed") && state.mode === "auto") scheduleAuto();
+      sendEstado(true);
+      return;
+    }
+    const total = state.script ? state.script.total : 0;
+    switch (cmd) {
+      case "play_pause": togglePlay(); break;
+      case "prev_paragraph":
+        if (state.script) jumpTo(TPCore.objetivoParrafoAnterior(state.currentIdx, state.paraStarts), { instant: true });
+        break;
+      case "back_lines": moveLines(-Math.abs(value || 3)); break;
+      case "scroll": moveLines(value || 0); break;
+      case "next_section":
+        if (state.script) {
+          jumpTo(TPCore.objetivoSeccionSiguiente(state.currentIdx, state.secStarts, state.paraStarts, total),
+                 { instant: true });
+        }
+        break;
+      case "top": resetPosition(); break;
+      case "lock": setStealth(!native.locked); break;
+      case "topmost": setTopmost(!native.topmost); break;
+      case "countdown": startCountdown(value); break;
+      default: break;
+    }
+    updateUI();
+    sendEstado(true);
+  }
+
+  // ===== Guiones de la carpeta guiones/ =====
+  async function loadScriptList() {
+    try {
+      const r = await fetch("/api/guiones");
+      if (!r.ok) return;
+      const names = await r.json();
+      const sel = els.selGuion;
+      for (const opt of Array.from(sel.options).slice(1)) opt.remove();
+      for (const n of names) {
+        const opt = document.createElement("option");
+        opt.value = n;
+        opt.textContent = n;
+        sel.appendChild(opt);
+      }
+    } catch (err) {
+      console.error("No se pudo leer la lista de guiones:", err);
+    }
+  }
+
+  async function openFromList() {
+    const name = els.selGuion.value;
+    if (!name) return;
+    try {
+      const r = await fetch(`/api/guiones/${encodeURIComponent(name)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      els.scriptText.value = await r.text();
+      state.pendingName = name;
+      loadFromTextarea();
+    } catch (err) {
+      notify("error", `No se pudo abrir ${name}: ${err.message}`, { channel: "script" });
+    }
+  }
+
   function loadFromTextarea() {
     const text = els.scriptText.value;
     if (!text.trim()) {
@@ -1205,11 +1648,13 @@
       notify("error", `El guion tiene ${text.length} caracteres y el máximo es ${MAX_SCRIPT_CHARS}.`, { channel: "script", sticky: true });
       return;
     }
-    // El backend pausa la escucha al recibir load_script. Al salir de Auto no
+    // El backend pausa la escucha al recibir load_script. Al salir de Manual no
     // se informa la posición: es del guion que se va a reemplazar.
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
+    cancelCountdown();
+    if (isListening()) pauseVoice();
     else if (state.mode === "auto") setMode("idle");
     state.pendingText = text;
+    if (els.selGuion.value !== state.pendingName) state.pendingName = null;
     if (!isOpen()) {
       notify("warning", "Sin conexión con el backend: el guion se enviará al reconectar.", { channel: "script" });
     } else if (sendLoad(text, "user")) {
@@ -1231,240 +1676,159 @@
     }
   }
 
-  // ===== Eventos UI =====
-  els.fontSize.addEventListener("input", () => {
-    const v = els.fontSize.value;
-    els.scriptView.style.fontSize = `${v}px`;
-    els.fontSizeLabel.textContent = v;
-    state.lastLineTop = null;
+  // ===== Eventos de la configuración =====
+  function onRange(input, fn) {
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      if (Number.isFinite(v)) { fn(v); applyPrefs(); }
+    });
+  }
+  onRange(els.letra, (v) => { prefs = { ...prefs, letra: v }; });
+  onRange(els.lineHeight, (v) => { prefs = { ...prefs, interlineado: v }; });
+  onRange(els.fondo, (v) => { prefs = { ...prefs, fondo_pct: v }; });
+  onRange(els.velocidad, (v) => {
+    prefs = { ...prefs, velocidad: v };
+    if (state.mode === "auto") scheduleAuto();
   });
-  els.lineHeight.addEventListener("input", () => {
-    const v = els.lineHeight.value;
-    els.scriptView.style.lineHeight = v;
-    els.lineHeightLabel.textContent = v;
-    state.lastLineTop = null;
+  onRange(els.pausaAsistido, (v) => { prefs = { ...prefs, pausa_asistido_s: v }; });
+  onRange(els.frenoConfirmar, (v) => { prefs = { ...prefs, frenos: { ...prefs.frenos, confirm_words: v } }; });
+  onRange(els.frenoAdelanto, (v) => { prefs = { ...prefs, frenos: { ...prefs.frenos, max_ahead: v } }; });
+  onRange(els.frenoVelmax, (v) => { prefs = { ...prefs, frenos: { ...prefs.frenos, max_wps: v } }; });
+  els.chkFrase.addEventListener("change", () => {
+    prefs = { ...prefs, frenos: { ...prefs.frenos, sentence_guard: els.chkFrase.checked } };
+    applyPrefs();
   });
-  els.autoSpeed.addEventListener("input", () => {
-    const v = parseFloat(els.autoSpeed.value);
-    if (Number.isFinite(v)) setSpeed(v);
-  });
-
+  els.chkBanda.addEventListener("change", () => { prefs = { ...prefs, banda: els.chkBanda.checked }; applyPrefs(); });
+  els.chkHalo.addEventListener("change", () => { prefs = { ...prefs, halo: els.chkHalo.checked }; applyPrefs(); });
+  els.chkEspejo.addEventListener("change", () => { prefs = { ...prefs, espejo: els.chkEspejo.checked }; applyPrefs(); });
+  for (const btn of document.querySelectorAll(".muestra-color")) {
+    btn.addEventListener("click", () => { prefs = { ...prefs, texto: btn.dataset.color }; applyPrefs(); });
+  }
+  for (const btn of document.querySelectorAll(".segmentado [data-modo]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.currentTarget.blur();
+      setAvance(btn.dataset.modo);
+    });
+  }
+  els.btnPreajuste.addEventListener("click", () => { prefs = TPCore.preajustePresentacion(prefs); applyPrefs(); });
   els.btnLoad.addEventListener("click", loadFromTextarea);
-  els.btnStart.addEventListener("click", startVoice);
-  els.btnAuto.addEventListener("click", startAuto);
-  els.btnPause.addEventListener("click", () => {
-    if (state.mode === "voice" || state.mode === "voice_pending") pauseVoice();
-    else if (state.mode === "auto") stopAuto();
-  });
-  els.btnReset.addEventListener("click", resetPosition);
+  els.selGuion.addEventListener("change", openFromList);
+  els.btnAuto.addEventListener("click", startReading);
   els.btnFullscreen.addEventListener("click", toggleFullscreen);
   window.addEventListener("resize", () => {
     state.lastLineTop = null;
+    measureLine();
     recenterSoon();
   });
 
-  // ===== Stealth + Topmost (ventana nativa pywebview) =====
-  // Solo activos si la app corre dentro del wrapper pywebview (launch.py).
-  // En navegador normal no existe `window.pywebview`.
-  const stealth = {
-    available: false,
-    locked: true,
-    topmost: false,
-  };
+  // ===== App nativa (pywebview, launch.py): invisible en capturas, siempre adelante, fondo =====
+  // En un navegador normal no existe `window.pywebview` y estos controles se ocultan.
+  const native = { available: false, locked: true, topmost: false, alphaFloor: 1 };
 
-  function updateStealthUI() {
-    if (!stealth.available) {
-      els.btnStealth.classList.add("hidden");
-      els.btnTopmost.classList.add("hidden");
-      els.overlayStealth.classList.add("hidden");
-      els.overlayTopmost.classList.add("hidden");
-      return;
-    }
-    els.btnStealth.classList.remove("hidden");
-    els.btnTopmost.classList.remove("hidden");
-
-    if (stealth.locked) {
-      els.btnStealth.textContent = "🛡 Stealth: BLOQUEADO";
-      els.btnStealth.classList.remove("unlocked");
-      els.overlayStealth.classList.remove("hidden");
-    } else {
-      els.btnStealth.textContent = "🔓 Stealth: visible";
-      els.btnStealth.classList.add("unlocked");
-      els.overlayStealth.classList.add("hidden");
-    }
-
-    if (stealth.topmost) {
-      els.btnTopmost.textContent = "📌 Siempre adelante: ON";
-      els.btnTopmost.classList.add("active");
-      els.overlayTopmost.classList.remove("hidden");
-    } else {
-      els.btnTopmost.textContent = "📌 Siempre adelante: OFF";
-      els.btnTopmost.classList.remove("active");
-      els.overlayTopmost.classList.add("hidden");
-    }
+  function updateNativeUI() {
+    for (const el of document.querySelectorAll(".nativo")) el.classList.toggle("hidden", !native.available);
+    els.chkStealth.checked = native.locked;
+    els.chkTopmost.checked = native.topmost;
+    els.fondoNota.textContent = native.available && native.alphaFloor < 1
+      ? `En la app nativa el fondo transparente también aclara el texto (límite de WebView2): como mucho baja al ${Math.round(native.alphaFloor * 100)} %. La banda y el halo compensan.`
+      : "";
+    updateBarra();
   }
 
-  async function toggleStealth() {
-    if (!stealth.available) return;
+  async function setStealth(on) {
+    if (!native.available) return;
     try {
-      const newLocked = await window.pywebview.api.toggle_lock();
-      stealth.locked = newLocked;
-      updateStealthUI();
+      native.locked = !!(await window.pywebview.api.set_lock(!!on));
     } catch (err) {
-      console.error("toggle_lock falló:", err);
-      notify("warning", "No se pudo alternar el modo stealth.", { channel: "native" });
+      console.error("set_lock falló:", err);
+      notify("warning", "No se pudo cambiar «invisible en capturas».", { channel: "native" });
     }
+    updateNativeUI();
+    sendEstado(true);
   }
 
-  async function toggleTopmost() {
-    if (!stealth.available) return;
+  async function setTopmost(on) {
+    if (!native.available) return;
     try {
-      const newTop = await window.pywebview.api.toggle_topmost();
-      stealth.topmost = !!newTop;
-      updateStealthUI();
+      native.topmost = !!(await window.pywebview.api.set_topmost(!!on));
     } catch (err) {
-      console.error("toggle_topmost falló:", err);
-      notify("warning", "No se pudo alternar «siempre adelante».", { channel: "native" });
+      console.error("set_topmost falló:", err);
+      notify("warning", "No se pudo cambiar «siempre adelante».", { channel: "native" });
     }
+    updateNativeUI();
+    sendEstado(true);
+  }
+
+  let backdropPending = null;
+  /** En la app nativa el fondo se aplica también como alfa de la ventana (con piso). */
+  function applyNativeBackdrop() {
+    if (!native.available) return;
+    const pct = prefs.fondo_pct;
+    if (backdropPending === null) {
+      requestAnimationFrame(async () => {
+        const v = backdropPending;
+        backdropPending = null;
+        try { await window.pywebview.api.set_backdrop(v); } catch (err) { console.error("set_backdrop falló:", err); }
+      });
+    }
+    backdropPending = pct;
+  }
+
+  /** Tecla O: fondo al 100 % y vuelta al elegido. */
+  let backdropBeforeO = null;
+  function toggleBackdrop() {
+    if (prefs.fondo_pct < 100) {
+      backdropBeforeO = prefs.fondo_pct;
+      prefs = { ...prefs, fondo_pct: 100 };
+    } else {
+      prefs = { ...prefs, fondo_pct: backdropBeforeO ?? 40 };
+    }
+    applyPrefs();
   }
 
   window.addEventListener("pywebviewready", async () => {
-    stealth.available = true;
-    try {
-      stealth.locked = await window.pywebview.api.is_locked();
-    } catch { /* noop */ }
-    try {
-      stealth.topmost = await window.pywebview.api.is_topmost();
-    } catch { /* noop */ }
-    updateStealthUI();
+    native.available = true;
+    try { native.locked = !!(await window.pywebview.api.is_locked()); } catch { /* noop */ }
+    try { native.topmost = !!(await window.pywebview.api.is_topmost()); } catch { /* noop */ }
+    try { native.alphaFloor = Number(await window.pywebview.api.backdrop_floor()) || 1; } catch { /* noop */ }
+    updateNativeUI();
+    applyNativeBackdrop();
+    sendEstado(true);
   });
+  els.chkStealth.addEventListener("change", () => setStealth(els.chkStealth.checked));
+  els.chkTopmost.addEventListener("change", () => setTopmost(els.chkTopmost.checked));
 
-  els.btnStealth.addEventListener("click", toggleStealth);
-  els.btnTopmost.addEventListener("click", toggleTopmost);
-
-  // ===== Transparencia de la ventana (solo app nativa) =====
-  // La opacidad se aplica en vivo mientras se mueve el control: la ventana
-  // misma es la previsualización. "Vista previa" muestra unos segundos el
-  // modo lectura (con el guion cargado o un texto de ejemplo).
+  // ===== Vista previa (de la copia estable) =====
   const PREVIEW_MS = 6000;
-  const DEFAULT_CHOSEN_OPACITY = 0.7;
-  var opacityEls = {
-    row: $("row-opacity"),
-    slider: $("opacity"),
-    label: $("opacity-label"),
-    btnPreview: $("btn-preview"),
-    sample: $("preview-sample"),
-    banner: $("preview-banner"),
-    overlay: $("overlay-opacity"),
-  };
-  var transp = {
-    current: 1.0,                 // opacidad aplicada ahora
-    chosen: 1.0,                  // la elegida con el control (la que alterna O)
-    pending: null,                // valor a aplicar en el próximo frame
-    previewTimer: null,
-  };
-
-  const pct = (opacity) => Math.round((1 - opacity) * 100);
-
-  function updateOpacityUI() {
-    if (!stealth.available) return;
-    opacityEls.row.classList.remove("hidden");
-    opacityEls.slider.value = String(pct(transp.chosen));
-    opacityEls.label.textContent = String(pct(transp.chosen));
-    const t = pct(transp.current);
-    opacityEls.overlay.textContent = `◐ ${t} %`;
-    opacityEls.overlay.classList.toggle("hidden", t === 0);
-  }
-
-  async function applyOpacity(opacity, persist) {
-    if (!stealth.available) return;
-    try {
-      const applied = await window.pywebview.api.set_opacity(opacity, !!persist);
-      transp.current = typeof applied === "number" ? applied : opacity;
-    } catch (err) {
-      console.error("set_opacity falló:", err);
-      notify("warning", "No se pudo cambiar la transparencia de la ventana.", { channel: "native" });
-    }
-    updateOpacityUI();
-  }
-
-  function onOpacityInput() {
-    const opacity = 1 - (parseFloat(opacityEls.slider.value) || 0) / 100;
-    transp.chosen = opacity;
-    opacityEls.label.textContent = opacityEls.slider.value;
-    if (transp.pending === null) {
-      requestAnimationFrame(() => {
-        const value = transp.pending;
-        transp.pending = null;
-        if (value !== null) applyOpacity(value, false);
-      });
-    }
-    transp.pending = opacity;
-  }
-
-  function onOpacityChange() {
-    transp.chosen = 1 - (parseFloat(opacityEls.slider.value) || 0) / 100;
-    applyOpacity(transp.chosen, true);   // se recuerda al reabrir
-  }
-
-  function toggleOpacity() {
-    if (!stealth.available) return;
-    if (transp.current < 1) {
-      applyOpacity(1.0, false);
-    } else {
-      applyOpacity(transp.chosen < 1 ? transp.chosen : DEFAULT_CHOSEN_OPACITY, false);
-    }
-  }
+  const preview = { timer: null };
 
   function endPreview() {
-    if (!transp || !opacityEls) return;   // aún no inicializado
-    if (transp.previewTimer) {
-      clearTimeout(transp.previewTimer);
-      transp.previewTimer = null;
-    }
-    opacityEls.sample.classList.add("hidden");
-    opacityEls.banner.classList.add("hidden");
+    if (!preview || !els.previewSample) return;
+    clearTimeout(preview.timer);
+    preview.timer = null;
+    els.previewSample.classList.add("hidden");
+    els.previewBanner.classList.add("hidden");
   }
 
   function startPreview() {
     endPreview();
-    const hasScript = !!els.scriptView.querySelector("[data-idx]");
-    if (!hasScript) {
-      opacityEls.sample.style.fontSize = els.scriptView.style.fontSize;
-      opacityEls.sample.style.lineHeight = els.scriptView.style.lineHeight;
-      opacityEls.sample.classList.remove("hidden");
-    }
-    opacityEls.banner.textContent =
-      `Vista previa · transparencia ${pct(transp.current)} % · Esc para volver`;
-    opacityEls.banner.classList.remove("hidden");
+    if (!els.scriptView.querySelector("[data-idx]")) els.previewSample.classList.remove("hidden");
+    els.previewBanner.textContent = `Vista previa · fondo ${prefs.fondo_pct} % · Esc para volver`;
+    els.previewBanner.classList.remove("hidden");
     enterReaderMode();
-    transp.previewTimer = setTimeout(() => {
-      transp.previewTimer = null;
-      // Si el usuario empezó a leer durante la vista previa, se queda en lectura.
+    preview.timer = setTimeout(() => {
+      preview.timer = null;
       if (state.mode === "idle") exitReaderMode();
       else endPreview();
     }, PREVIEW_MS);
   }
-
-  opacityEls.slider.addEventListener("input", onOpacityInput);
-  opacityEls.slider.addEventListener("change", onOpacityChange);
-  opacityEls.btnPreview.addEventListener("click", startPreview);
-
-  window.addEventListener("pywebviewready", async () => {
-    try {
-      const saved = await window.pywebview.api.get_opacity();
-      if (typeof saved === "number") {
-        transp.current = saved;
-        transp.chosen = saved;
-      }
-    } catch { /* noop */ }
-    updateOpacityUI();
-  });
+  els.btnPreview.addEventListener("click", startPreview);
 
   // ===== Atajos (un único keymap) =====
   function isEditable(el) {
     if (!el || el === document.body) return false;
     const tag = el.tagName;
+    if (tag === "INPUT" && (el.type === "range" || el.type === "checkbox")) return false;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
     if (el.isContentEditable) return true;
     return typeof el.closest === "function" && !!el.closest("[contenteditable]");
@@ -1477,6 +1841,7 @@
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     const key = e.key;
     const arrow = ARROWS.has(key);
+    if (arrow && e.target && e.target.type === "range") return;   // el deslizador usa sus flechas
     if (e.shiftKey && !arrow) return;   // Shift solo modifica las flechas
     if (e.repeat && !arrow) {
       if (key === " ") e.preventDefault();
@@ -1488,7 +1853,7 @@
         e.preventDefault();
         // Sin foco en el botón, el keyup no lo vuelve a "pulsar".
         const active = document.activeElement;
-        if (active && active.tagName === "BUTTON") active.blur();
+        if (active && (active.tagName === "BUTTON" || active.tagName === "INPUT")) active.blur();
         togglePlay();
         break;
       }
@@ -1496,13 +1861,19 @@
       case "A":
         toggleAuto();
         break;
+      case "m":
+      case "M":
+        setAvance(TPCore.aplicarOrdenPrefs(prefs, "mode", "siguiente").avance);
+        break;
       case "ArrowUp":
         e.preventDefault();
-        changeSpeed(0.5);
+        changeSpeed(1);
+        if (state.mode === "auto") scheduleAuto();
         break;
       case "ArrowDown":
         e.preventDefault();
-        changeSpeed(-0.5);
+        changeSpeed(-1);
+        if (state.mode === "auto") scheduleAuto();
         break;
       case "ArrowLeft":
         e.preventDefault();
@@ -1525,15 +1896,15 @@
         break;
       case "l":
       case "L":
-        toggleStealth();   // anti-captura (solo app nativa)
+        setStealth(!native.locked);   // invisible en capturas (solo app nativa)
         break;
       case "t":
       case "T":
-        toggleTopmost();   // siempre adelante (solo app nativa)
+        setTopmost(!native.topmost);  // siempre adelante (solo app nativa)
         break;
       case "o":
       case "O":
-        toggleOpacity();   // transparencia sí/no (solo app nativa)
+        toggleBackdrop();
         break;
       default:
         break;
@@ -1542,10 +1913,13 @@
 
   document.addEventListener("keydown", onKeyDown);
 
+  // Solo lectura, para depurar y para las pruebas de extremo a extremo.
+  window.TPDebug = Object.freeze({ state: () => state, prefs: () => prefs, lineStarts });
+
   // Inicialización
-  els.scriptView.style.fontSize = `${els.fontSize.value}px`;
-  els.scriptView.style.lineHeight = els.lineHeight.value;
-  state.autoSpeed = parseFloat(els.autoSpeed.value) || 3;
+  prefs = loadPrefs();
+  applyPrefs();
   updateUI();
   connect();
+  loadScriptList();
 })();

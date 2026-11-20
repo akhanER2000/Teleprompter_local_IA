@@ -60,6 +60,13 @@ GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 LWA_ALPHA = 0x2
 MIN_OPACITY = 0.30
+# Hito 84 (T3): WebView2 dentro de pywebview 6.2.1 no deja ver lo que hay detrás
+# por píxel (medido: transparent=True, TransparencyKey, LWA_COLORKEY, DWM y
+# blur-behind dejan el fondo opaco). El único medio que funciona es el alfa de
+# TODA la ventana, que también aclara el texto. Por eso el "Fondo" en la app
+# nativa baja el alfa de la ventana como mucho hasta este piso: el texto nunca
+# queda por debajo del 50 %. En el navegador el fondo CSS sí es independiente.
+BACKDROP_FLOOR = 0.50
 WINDOW_PREFS = ROOT / "data" / "ventana.json"
 
 
@@ -231,7 +238,9 @@ class StealthAPI:
         self._window: "webview.Window | None" = None  # privado: pywebview no lo expone al puente JS
         self.locked: bool = True
         self.topmost: bool = False
-        self.opacity: float = _clamp_opacity(_load_window_prefs().get("opacity", 1.0))
+        # Hito 84: el fondo lo decide la página (lo guarda en su localStorage) y
+        # se aplica en `pywebviewready`; data/ventana.json ya no manda.
+        self.opacity: float = 1.0
         self._hwnd_cache: "int | None" = None
         self._applied_once: bool = False
 
@@ -290,6 +299,27 @@ class StealthAPI:
     def is_topmost(self) -> bool:
         return self.topmost
 
+    # Hito 84 ----------------------------------------------------------
+    def set_lock(self, locked) -> bool:
+        """Invisible en capturas sí/no. Devuelve el estado que quedó."""
+        self.apply_lock(bool(locked))
+        return self.locked
+
+    def set_topmost(self, topmost) -> bool:
+        self.apply_topmost(bool(topmost))
+        return self.topmost
+
+    def backdrop_floor(self) -> float:
+        return BACKDROP_FLOOR
+
+    def set_backdrop(self, pct) -> float:
+        """Fondo 0..100 % -> alfa de la ventana entre BACKDROP_FLOOR y 1,0."""
+        try:
+            pct = max(0.0, min(100.0, float(pct)))
+        except (TypeError, ValueError):
+            pct = 100.0
+        return self.apply_opacity(BACKDROP_FLOOR + (1.0 - BACKDROP_FLOOR) * pct / 100.0)
+
     def set_opacity(self, value, persist=False) -> float:
         """Opacidad de 0.3 a 1.0. Con persist=True se recuerda al reabrir."""
         opacity = self.apply_opacity(value)
@@ -337,7 +367,7 @@ def main():
         f"http://{HOST}:{PORT}",
         width=1280,
         height=800,
-        min_size=(640, 400),
+        min_size=(360, 260),   # T2: se prueba hasta 400 x 300
         resizable=True,
         on_top=False,
         js_api=api,

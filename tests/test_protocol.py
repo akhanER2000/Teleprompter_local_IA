@@ -282,7 +282,8 @@ def test_start_con_idx_y_la_voz_sigue_desde_ahi(make) -> None:
         assert 120 < scroll["current_idx"] <= 124
         assert scroll["matched_word"] in WORDS[120:124]
         assert scroll["stt_ms"] >= 0 and scroll["lag_ms"] >= 0
-        assert h.session.matcher.current_idx == scroll["current_idx"]
+        # Hito 84: en Voz se emite la posición frenada; el matcher puede ir por delante.
+        assert h.session.matcher.current_idx >= scroll["current_idx"]
         # Fase 2: ventana de al menos 1 s (MIN_WINDOW_S) y como mucho window_s (3 s).
         assert int(voice_mod.MIN_WINDOW_S * 16000) <= h.stt.last_samples <= 3 * 16000
         assert set(h.stt.prompts) == {None}  # sin TP_PROMPT_CONTEXT no hay initial_prompt

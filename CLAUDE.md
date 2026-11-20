@@ -32,6 +32,9 @@ Flujo de voz: captura continua (buffer circular 16 kHz) → VAD → Whisper sobr
 - Entorno: `.venv312` (Python 3.12, sin torch). El antiguo `.venv` está roto y se conserva como respaldo.
 - Backend en modo navegador: `.venv312\Scripts\python.exe -m uvicorn backend.server:app --host 127.0.0.1 --port 8765` y abrir `http://127.0.0.1:8765`.
 - App nativa (pywebview, oculta en capturas): `scripts\start_stealth.bat`.
+- Hito 84, doble clic en la raíz: `ABRIR_TELEPROMPTER.bat` (app nativa) o `ABRIR_EN_NAVEGADOR.bat` (backend + navegador en 8765). La tecla Prompter abre `scripts\start_stealth.vbs`; los tres usan `.venv312`.
+- Controles externos (Stream Deck): WebSocket `ws://127.0.0.1:8765/control`, contrato T6 en `kit_Galleon100SD/docs/plan84/DECISIONES_84.md`. Clases y variables que comparte la lógica con `tema.css`: `frontend/CLASES.md`.
+- Pruebas de extremo a extremo y capturas (Chrome headless, sin red): `tests\test_e2e_control.py`, `tools\capturas_v3.py`; sabotajes de las puertas del hito 84: `tools\sabotajes_84.py`.
 - Tests (sin GPU, micrófono ni red): `.venv312\Scripts\python.exe -m pytest -q`.
 - Replay de grabaciones: `.venv312\Scripts\python.exe tools\replay.py --wav tests\fixtures\audio\<archivo>.wav --script guiones\ejemplo.txt`.
 - Grabar muestras: `.venv312\Scripts\python.exe tools\record_sample.py --name <nombre> --seconds 90`.
